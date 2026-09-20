@@ -1,4 +1,9 @@
 node_modules
-pnpm-lock.yaml
+
+# Runtime state, not build input. The two reply-emoji images in data/ ARE build
+# input (utils/BotEmojiSetup.js reads them out of the image), so the folder
+# itself must not be excluded.
 config.js
-data/
+data/grytcord*
+data/gryt-bot-identity.json
+data/*.db*

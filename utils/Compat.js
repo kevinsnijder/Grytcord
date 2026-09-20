@@ -54,6 +54,28 @@ export async function replyTo(message, payload) {
 }
 
 /**
+ * Say a bridge worked without putting a message in a Discord channel.
+ *
+ * A reply is still a message everybody in the channel sees, so on Discord this
+ * marks the command itself instead. Reacting can be refused (no Add Reactions),
+ * and silence would then look like nothing happened — so that case falls back
+ * to a reply rather than leaving somebody guessing.
+ *
+ * @param {any} message
+ * @param {string} text
+ */
+export async function confirmQuietly(message, text) {
+  if (isGryt(message)) return replyTo(message, text);
+
+  try {
+    await message.react("✅");
+    return null;
+  } catch {
+    return replyTo(message, text);
+  }
+}
+
+/**
  * Post into a channel on either side.
  *
  * @param {{ platform: "gryt", server: any, channelId: string } | { platform: "discord", channel: any }} target

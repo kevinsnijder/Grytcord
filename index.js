@@ -29,6 +29,7 @@ import { setupReactionHandling } from "./utils/ReactionHandler.js";
 import { setupHealthcheck } from "./utils/HealthCheck.js";
 import { ensureBotEmojis } from "./utils/BotEmojiSetup.js";
 import { buildDiscordUserAgentSuffix } from "./utils/UserAgent.js";
+import { setPresenceUpdater } from "./utils/Presence.js";
 
 const discordClient = new DiscordClient({
   rest: {
@@ -218,6 +219,9 @@ grytClient.on("ready", () => {
   if (discordReady) onStartupComplete();
 });
 
+// A Gryt activity line lives on the connection, so a reconnect starts blank.
+grytClient.on("rejoined", () => updatePresence());
+
 grytClient.on("channels", (server) => {
   log("DEBUG", `${server.host}: ${server.channels.size} channels visible`);
 });
@@ -227,6 +231,11 @@ grytClient.on("channels", (server) => {
 let discordReady = false;
 let firstReadyDone = false;
 
+/**
+ * Read from the database rather than counted once at startup, because the
+ * number changes every time somebody bridges or unbridges something.
+ * `refreshPresence()` is what those commands call.
+ */
 async function updatePresence() {
   try {
     const count = await ChannelMap.count();
@@ -359,6 +368,7 @@ function motdLoop() {
   for (const server of grytClient.servers.values()) server.setActivity(text);
 }
 
+setPresenceUpdater(updatePresence);
 setupReactionHandling(discordClient, grytClient);
 setupHealthcheck(discordClient, grytClient);
 

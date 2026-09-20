@@ -6,7 +6,8 @@ import {
   createBridge,
   optionalPermissionWarning,
 } from "../utils/BridgeSetup.js";
-import { isGryt, replyTo } from "../utils/Compat.js";
+import { confirmQuietly, isGryt, replyTo } from "../utils/Compat.js";
+import Config from "../utils/ConfigHandler.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -79,7 +80,8 @@ const command = {
       announceOnGryt: !fromGryt,
     });
 
-    await replyTo(
+    const confirm = Config.AutoVerifyBridges ? confirmQuietly : replyTo;
+    await confirm(
       message,
       `🎉 This channel is now bridged to ${fromGryt ? "Discord" : "Gryt"}!${optionalPermissionWarning(message)}`,
     );

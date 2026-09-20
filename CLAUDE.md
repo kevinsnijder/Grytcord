@@ -37,6 +37,17 @@ handlers read it. Do not make either handler guess.
 the last known reaction state per message so a relayed removal removes rather
 than adds. `setReaction` is the only thing that should call `chat:react`.
 
+## Reading a file from Gryt
+
+`GET /api/uploads/files/:id` is **not** public: it wants a *file token* in the
+query string (`?t=`), which `server:joined` and `token:refreshed` hand out
+alongside the access token. A header is no use — these URLs are handed to
+Discord as a webhook's `avatar_url` and fetched by Discord, not by us.
+
+`GrytServerConnection.fileUrl()` is the only place that builds one, and it
+attaches the token. Build such a URL by hand and it comes back 401, which shows
+up as a missing avatar rather than an error.
+
 ## Things Gryt does not have
 
 Pins. Message URLs. Bulk delete (deleting several is several deletes). Per-member
@@ -48,6 +59,16 @@ check against `GrytElevatedRoles`.
 Creating a bridge posts **nothing into the Discord channel**. The Gryt side gets
 an announcement; the Discord side gets only the reply to the command that was
 typed. This is a requirement, not an oversight — see `announceBridge`.
+
+With `AutoVerifyBridges` on, that goes further: `bridge` and `bridgeall` take
+effect from one side with no approval on the other, and a success on Discord is
+a ✅ reaction on the command rather than any message at all (`confirmQuietly`).
+Failures still reply — a failure nobody can see is worse than a message nobody
+wanted.
+
+The "bridging N channels" line is read from the database, so anything that
+creates or removes a bridge calls `refreshPresence()`. Counting once at startup
+is what left it saying zero forever.
 
 Voice bridging is not ported.
 

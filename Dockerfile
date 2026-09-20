@@ -8,9 +8,9 @@ RUN npm install -g pnpm
 
 WORKDIR /app
 
-COPY package*.json ./
+COPY package.json ./
 
-COPY pnpm-workspace.yaml ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml* ./
 
 RUN pnpm install
 

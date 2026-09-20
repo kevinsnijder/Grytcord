@@ -3,6 +3,7 @@ import { ChannelMap, MessageMap } from "../db/index.js";
 import { BridgeMap } from "../utils/CommandHandler.js";
 import { replyTo } from "../utils/Compat.js";
 import { log } from "../utils/Logger.js";
+import { refreshPresence } from "../utils/Presence.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -55,6 +56,7 @@ const command = {
 
     await MessageMap.destroy({ where: { channelMapId: channelMap.get("id") } });
     await channelMap.destroy();
+    refreshPresence();
 
     await replyTo(message, "Successfully unbridged!");
   },

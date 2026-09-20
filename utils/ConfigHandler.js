@@ -14,6 +14,7 @@ const DefaultConfig = {
   EmbedFooterContent: "",
   LoggingCategories: ["GRYT", "DISCORD", "META"],
   BotPrefix: "gc!",
+  AutoVerifyBridges: false,
   DiscordBioStart: "",
   DatabaseEncryptionToken: "",
   PostgresConnectionString: "",

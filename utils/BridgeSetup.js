@@ -3,6 +3,7 @@ import { log } from "./Logger.js";
 import { sendTo } from "./Compat.js";
 import { checkBotPermissions, checkGrytPermissions } from "./CheckBotPerms.js";
 import { resolveDiscordParentChannel } from "./DiscordThreadResolver.js";
+import { refreshPresence } from "./Presence.js";
 
 /**
  * Making a bridge, in one place, because `setup`, `setupall` and `verify` all
@@ -20,6 +21,47 @@ export function toBridgeType(direction) {
 /** @param {"both" | "d2g" | "g2d"} direction */
 function arrow(direction) {
   return direction === "both" ? "<->" : direction === "d2g" ? "-->" : "<--";
+}
+
+/**
+ * Whatever somebody typed, as a direction.
+ *
+ * @param {string | undefined} value
+ * @returns {"both" | "d2g" | "g2d"}
+ */
+export function toDirection(value) {
+  const lowered = String(value ?? "both").toLowerCase();
+  if (lowered.startsWith("g")) return "g2d";
+  if (lowered.startsWith("d")) return "d2g";
+  return "both";
+}
+
+/** @param {string} name */
+export function normalizeChannelName(name) {
+  return String(name ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * The Gryt channel a Discord channel should pair with: the same name, or a
+ * name that ends with it.
+ *
+ * @param {Array<any>} grytChannels
+ * @param {any} discordChannel
+ */
+export function findMatchingChannel(grytChannels, discordChannel) {
+  const wanted = normalizeChannelName(discordChannel.name);
+  const sameType = grytChannels.filter((x) => (x.type ?? "text") === "text");
+
+  const exact = sameType.find((x) => normalizeChannelName(x.name) === wanted);
+  if (exact) return exact;
+
+  return sameType.find((x) => normalizeChannelName(x.name).endsWith(wanted)) ?? null;
 }
 
 /**
@@ -145,6 +187,8 @@ export async function createBridge(options) {
     "META",
     `Bridged #${discordChannel.name} (Discord) ${arrow(direction)} #${grytChannel?.name ?? grytChannelId} (${grytServer.host})`,
   );
+
+  refreshPresence();
 
   return { ok: true, channelMap };
 }

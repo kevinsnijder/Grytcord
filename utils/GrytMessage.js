@@ -49,11 +49,19 @@ export class GrytMessage {
     };
   }
 
-  /** Where the member's picture lives, if they have one. */
+  /**
+   * Where the member's picture lives, if they have one.
+   *
+   * The message carries the file id, but the member list has it too — and is
+   * the only one that does for a message that arrived without it. The URL
+   * carries its own read token, because Discord fetches it rather than us.
+   */
   get avatarURL() {
-    return this.author.avatarFileId
-      ? this.server.fileUrl(this.author.avatarFileId)
-      : null;
+    const fileId =
+      this.author.avatarFileId ??
+      this.server.member(this.senderId)?.avatarFileId ??
+      null;
+    return fileId ? this.server.fileUrl(fileId) : null;
   }
 
   get channel() {

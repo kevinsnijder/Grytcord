@@ -8,6 +8,9 @@ const Config = {
     {
       host: "chat.example.com",
       // botToken: "",
+      // Only loopback is assumed to be plain http. A server on a LAN address
+      // without TLS needs this, or both halves of the bot try https and fail.
+      // secure: false,
     },
   ],
 
@@ -71,6 +74,20 @@ const Config = {
 
   // The prefix of the bot
   BotPrefix: "gc!",
+
+  // Bridge from one side, with no approval on the other.
+  //
+  // Off by default because the two-sided handshake is what stops somebody
+  // bridging your channel into a server you have never heard of. Turn it on
+  // when you own both ends, which is the usual self-hosted case.
+  //
+  // With it on:
+  //  - `bridge <channelId> [direction]` and `bridgeall` take effect immediately;
+  //    `setup`, `setupall` and `verify` still work if you prefer them
+  //  - a bridge made from Discord posts NOTHING in the Discord channel: the
+  //    command gets a ✅ reaction instead of a reply. Failures still reply,
+  //    because a failure you cannot see is worse than a message you did not want
+  AutoVerifyBridges: false,
 
   // Max attachment size (in bytes) Grytcord will try to carry from Discord to
   // Gryt. Gryt's own per-file limit is a server setting; this is just the point

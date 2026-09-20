@@ -6,46 +6,12 @@ import { checkBotPermissions } from "../utils/CheckBotPerms.js";
 import {
   announceBridge,
   createBridge,
+  findMatchingChannel,
   optionalPermissionWarning,
+  toDirection,
 } from "../utils/BridgeSetup.js";
 import { editSent, isGryt, replyTo } from "../utils/Compat.js";
 import { ChannelType } from "discord.js";
-
-/** @param {string} name */
-function normalizeChannelName(name) {
-  return String(name ?? "")
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9_-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-/**
- * The Gryt channel a Discord channel should pair with: same name, or a name
- * that ends with it.
- *
- * @param {Array<any>} grytChannels
- * @param {any} discordChannel
- */
-function findMatchingChannel(grytChannels, discordChannel) {
-  const wanted = normalizeChannelName(discordChannel.name);
-  const sameType = grytChannels.filter((x) => (x.type ?? "text") === "text");
-
-  const exact = sameType.find((x) => normalizeChannelName(x.name) === wanted);
-  if (exact) return exact;
-
-  return sameType.find((x) => normalizeChannelName(x.name).endsWith(wanted)) ?? null;
-}
-
-/** @param {string} value */
-function toDirection(value) {
-  const lowered = String(value ?? "both").toLowerCase();
-  if (lowered.startsWith("g")) return "g2d";
-  if (lowered.startsWith("d")) return "d2g";
-  return "both";
-}
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}

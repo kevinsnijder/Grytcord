@@ -10,16 +10,9 @@ import {
   announceBridge,
   createBridge,
   optionalPermissionWarning,
+  toDirection,
 } from "../utils/BridgeSetup.js";
-import { isGryt, replyTo } from "../utils/Compat.js";
-
-/** @param {string} value */
-function toDirection(value) {
-  const lowered = String(value ?? "both").toLowerCase();
-  if (lowered.startsWith("g") || lowered === "gryt2discord") return "g2d";
-  if (lowered.startsWith("d") || lowered === "discord2gryt") return "d2g";
-  return "both";
-}
+import { confirmQuietly, isGryt, replyTo } from "../utils/Compat.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -163,7 +156,10 @@ both|discord2gryt|gryt2discord|d2g|g2d - the direction of the bridge, defaults t
       announceOnGryt: !fromGryt,
     });
 
-    await replyTo(
+    // With AutoVerifyBridges on, bridging is quiet on Discord however it was
+    // started — a ✅ on the command rather than a message in the channel.
+    const confirm = Config.AutoVerifyBridges ? confirmQuietly : replyTo;
+    await confirm(
       message,
       `🎉 This channel is now bridged to ${fromGryt ? "Discord" : "Gryt"}!${optionalWarning}`,
     );

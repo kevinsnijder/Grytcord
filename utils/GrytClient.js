@@ -40,33 +40,50 @@ export const WANTED_PERMISSIONS = [
 const SEND_ACK_TIMEOUT_MS = 15_000;
 
 /**
- * Whether a host is reached over http rather than https. Same rule the SDK
- * uses for the socket, kept in step so REST and the socket talk to one server.
+ * Where the REST half talks to. The same rule the SDK uses for the socket, kept
+ * in step so both halves reach one server.
+ *
+ * Only loopback is guessed as plain http: a Gryt server on a LAN address served
+ * over http needs `secure: false` in its config entry, which is passed to the
+ * SDK too.
  *
  * @param {string} host
+ * @param {boolean | undefined} secure
  */
-function httpBase(host) {
+function httpBase(host, secure) {
   if (/^https?:\/\//.test(host)) return host.replace(/\/+$/, "");
   const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:|$)/.test(host);
-  return `${isLocal ? "http" : "https"}://${host.replace(/\/+$/, "")}`;
+  const scheme = secure ?? !isLocal ? "https" : "http";
+  return `${scheme}://${host.replace(/\/+$/, "")}`;
 }
 
 /** One Gryt server. A Grytcord may be bridging several. */
 export class GrytServerConnection {
   /**
    * @param {GrytClient} client
-   * @param {{ host: string, botToken?: string }} options
+   * @param {{ host: string, botToken?: string, secure?: boolean }} options
    */
   constructor(client, options) {
     this.client = client;
     this.host = options.host;
     this.botToken = options.botToken;
+    /** Force http/https rather than guessing from the host. */
+    this.secure = options.secure;
     /** @type {import("@gryt/bot").GrytBot | null} */
     this.bot = null;
     /** @type {any} */
     this.socket = null;
     /** The token the REST half authenticates with. Read off the socket. */
     this.accessToken = null;
+    /**
+     * The weaker token that reads uploads, and the only thing that does.
+     *
+     * It rides in the query string rather than a header, because these URLs end
+     * up somewhere a header cannot follow — an `<img src>` in Gryt's own client,
+     * and a webhook's `avatar_url` here, which Discord fetches for itself with
+     * nothing of ours attached.
+     */
+    this.fileToken = null;
     /** @type {import("@gryt/bot").ServerInfo | null} */
     this.info = null;
     this.serverUserId = null;
@@ -95,7 +112,7 @@ export class GrytServerConnection {
   }
 
   get restBase() {
-    return httpBase(this.host);
+    return httpBase(this.host, this.secure);
   }
 
   get name() {
@@ -118,6 +135,7 @@ export class GrytServerConnection {
       description: Config.GrytDescription,
       wants: WANTED_PERMISSIONS,
       botToken: this.botToken,
+      secure: this.secure,
       // Grytcord routes commands itself, with per-server prefixes and the same
       // command set both sides see. The SDK's router would answer twice.
       prefix: "",
@@ -198,15 +216,21 @@ export class GrytServerConnection {
   wire(socket) {
     socket.on("server:joined", (payload) => {
       this.accessToken = payload?.accessToken ?? null;
+      this.fileToken = payload?.fileToken ?? null;
       this.serverUserId = readSelfId(payload?.accessToken) ?? this.serverUserId;
 
       // Being joined is what `ready` means here. The SDK's own `ready` fires
       // once and never again, so a reconnect would otherwise leave the bridge
       // switched off for the rest of the run.
-      if (this.info) this.ready = true;
+      if (this.info) {
+        this.ready = true;
+        // The activity line lives on the connection and died with the old one.
+        this.client.emit("rejoined", this);
+      }
     });
     socket.on("token:refreshed", (payload) => {
       this.accessToken = payload?.accessToken ?? this.accessToken;
+      this.fileToken = payload?.fileToken ?? this.fileToken;
     });
 
     socket.on("chat:new", (raw) => {
@@ -550,12 +574,32 @@ export class GrytServerConnection {
   }
 
   /**
+   * A URL anybody holding it can read the file from, for twelve hours.
+   *
+   * The token has to be in the query string: this URL is handed to Discord as a
+   * webhook's `avatar_url` and fetched by Discord, not by us, so there is no
+   * request of ours to put a header on. Without it every read comes back 401
+   * and the picture silently does not appear.
+   *
    * @param {string} fileId
    * @param {{ thumb?: boolean, download?: boolean }} [options]
    */
   fileUrl(fileId, options = {}) {
-    const query = options.thumb ? "?thumb=1" : options.download ? "?download=1" : "";
-    return `${this.restBase}/api/uploads/files/${fileId}${query}`;
+    if (!this.fileToken && !this.warnedAboutFileToken) {
+      this.warnedAboutFileToken = true;
+      log(
+        "GRYT",
+        `${this.host} has not sent a file token, so avatars and attachments will not load. Is the server older than file tokens?`,
+      );
+    }
+
+    const params = new URLSearchParams();
+    if (this.fileToken) params.set("t", this.fileToken);
+    if (options.thumb) params.set("thumb", "1");
+    if (options.download) params.set("download", "1");
+
+    const query = params.toString();
+    return `${this.restBase}/api/uploads/files/${fileId}${query ? `?${query}` : ""}`;
   }
 
   /**

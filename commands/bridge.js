@@ -3,15 +3,14 @@ import Config from "../utils/ConfigHandler.js";
 import { BridgeMap } from "../utils/CommandHandler.js";
 import { ChannelMap } from "../db/index.js";
 import { checkBotPermissions } from "../utils/CheckBotPerms.js";
-import { isGryt, replyTo, sendTo } from "../utils/Compat.js";
-
-/** @param {string} value */
-function toDirection(value) {
-  const lowered = String(value ?? "both").toLowerCase();
-  if (lowered.startsWith("g")) return "g2d";
-  if (lowered.startsWith("d")) return "d2g";
-  return "both";
-}
+import {
+  announceBridge,
+  createBridge,
+  optionalPermissionWarning,
+  toDirection,
+} from "../utils/BridgeSetup.js";
+import { confirmQuietly, isGryt, replyTo, sendTo } from "../utils/Compat.js";
+import changeBotBio from "../utils/ChangeBotBio.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -20,8 +19,10 @@ const command = {
   name: "bridge",
   description: "Bridge a channel",
   requireElevated: true,
-  params: "<channelId> <both|discord2gryt|gryt2discord>",
+  params: "<channelId> [both|discord2gryt|gryt2discord]",
   additionalInfo: `The channelId parameter takes a channel ID of the other end's channel (e.g. if you're running it on Gryt, it needs a Discord channel ID).
+
+With AutoVerifyBridges on in the config, this bridges straight away and nothing is posted in the Discord channel — the command gets a ✅ instead. With it off, the other side has to run \`verify\` within 2 minutes.
 
 Known limits:
 - Gryt has no pinned messages, so pins do not bridge
@@ -30,7 +31,7 @@ Known limits:
   async run(params, message, discordClient, grytClient) {
     const fromGryt = isGryt(message);
     const channelId = params[0];
-    const typeDef = params[1];
+    const direction = toDirection(params[1]);
 
     const botPerms = checkBotPermissions(message);
     if (!botPerms.hasAllCritical) {
@@ -41,7 +42,7 @@ Known limits:
       return;
     }
 
-    if (!channelId || !typeDef) {
+    if (!channelId) {
       await replyTo(
         message,
         `Missing parameters. Usage:\n\`\`\`\n${Config.BotPrefix}bridge [CHANNEL_ID] [TYPE]\n\`\`\``,
@@ -49,10 +50,8 @@ Known limits:
       return;
     }
 
-    const direction = toDirection(typeDef);
-
     // The other side's channel, whichever side that is.
-    let targetIsDiscord = fromGryt;
+    const targetIsDiscord = fromGryt;
     let targetChannel = null;
     let targetServer = null;
 
@@ -102,6 +101,54 @@ Known limits:
       return;
     }
 
+    // ── One-sided: make it now ────────────────────────────────────
+    if (Config.AutoVerifyBridges) {
+      const discordChannelId = fromGryt ? channelId : message.channelId;
+      const grytChannelId = fromGryt ? message.channelId : channelId;
+      const grytServer = fromGryt ? message.server : targetServer;
+
+      let discordChannel;
+      try {
+        discordChannel = await discordClient.channels.fetch(discordChannelId);
+      } catch {
+        discordChannel = null;
+      }
+      if (!discordChannel) {
+        await replyTo(message, "Discord channel not found. Maybe invite the bot?");
+        return;
+      }
+
+      const result = await createBridge({
+        discordChannel,
+        discordClient,
+        grytServer,
+        grytChannelId,
+        direction,
+      });
+
+      // A failure still replies: one you cannot see is worse than a message
+      // you did not want.
+      if (!result.ok) {
+        await replyTo(message, result.error ?? "Could not set the bridge up.");
+        return;
+      }
+
+      await announceBridge({
+        grytServer,
+        grytChannelId,
+        announceOnGryt: !fromGryt,
+      });
+
+      await confirmQuietly(
+        message,
+        `🎉 This channel is now bridged to ${fromGryt ? "Discord" : "Gryt"}!${optionalPermissionWarning(message)}`,
+      );
+
+      if (discordChannel.guild) await changeBotBio(discordChannel.guild);
+      return;
+    }
+
+    // ── Two-sided: ask the other end ──────────────────────────────
     BridgeMap.set(channelId, {
       discordChannelId: fromGryt ? channelId : message.channelId,
       grytChannelId: fromGryt ? message.channelId : channelId,
