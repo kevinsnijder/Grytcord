@@ -1,3 +1,5 @@
+## ⚠️ AI DISCLAIMER: This project is a 100% vibecoded migration from the original source. Do not trust any code in this repository without checking it yourself.
+
 # Grytcord
 
 A set-and-forget Discord <-> [Gryt](https://gryt.chat) bridge, ported from Fluxcord.
