@@ -16,10 +16,6 @@ export function isDiscordSpoilerAttachment(attachment) {
   );
 }
 
-export function isFluxerSpoilerAttachment(attachment) {
-  return Boolean((attachment?.flags ?? 0) & SPOILER_ATTACHMENT_FLAG);
-}
-
 export function toDiscordSpoilerFilename(filename, spoiler) {
   if (!filename) return filename;
   const cleanName = filename.startsWith(DISCORD_SPOILER_PREFIX)
@@ -28,4 +24,4 @@ export function toDiscordSpoilerFilename(filename, spoiler) {
   return spoiler ? `${DISCORD_SPOILER_PREFIX}${cleanName}` : cleanName;
 }
 
-export { SPOILER_ATTACHMENT_FLAG };
+export { SPOILER_ATTACHMENT_FLAG, DISCORD_SPOILER_PREFIX };

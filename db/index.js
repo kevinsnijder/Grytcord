@@ -27,7 +27,7 @@ if (isPostgres) {
   sequelize = new Sequelize({
     dialect: "sqlite",
     dialectModule: sqlite3,
-    storage: Config.DataFolderPath + "/fluxcord.db",
+    storage: Config.DataFolderPath + "/grytcord.db",
     logging: (msg) => log("DB", msg),
     password: !!DefaultConfig.DatabaseEncryptionToken
       ? DefaultConfig.DatabaseEncryptionToken
@@ -49,12 +49,11 @@ class ChannelMap extends Model {}
 class MessageMap extends Model {}
 class UserConfig extends Model {}
 class GuildMap extends Model {}
-class VoiceChannelMap extends Model {}
 
 GuildMap.init(
   {
     guildId: { type: DataTypes.STRING, allowNull: false },
-    guildType: { type: DataTypes.ENUM("fluxer", "discord"), allowNull: false },
+    guildType: { type: DataTypes.ENUM("gryt", "discord"), allowNull: false },
     errorReaction: {
       type: DataTypes.STRING,
       defaultValue: "⛓️‍💥",
@@ -62,7 +61,7 @@ GuildMap.init(
     },
     errorLoggingChannelId: { type: DataTypes.STRING, allowNull: true },
     errorLoggingPlatform: {
-      type: DataTypes.ENUM("fluxer", "discord"),
+      type: DataTypes.ENUM("gryt", "discord"),
       allowNull: true,
     },
     botPrefix: {
@@ -84,18 +83,20 @@ ChannelMap.init(
     discordChannelId: { type: DataTypes.STRING, allowNull: false },
     discordWebhookId: { type: DataTypes.STRING, allowNull: false },
     discordWebhookToken: { type: DataTypes.STRING, allowNull: false },
-    fluxerGuildId: { type: DataTypes.STRING, allowNull: false },
-    fluxerChannelId: { type: DataTypes.STRING, allowNull: false },
-    fluxerWebhookId: { type: DataTypes.STRING, allowNull: false },
-    fluxerWebhookToken: { type: DataTypes.STRING, allowNull: false },
+    // The Gryt server this channel lives on. One Grytcord can bridge several.
+    grytHost: { type: DataTypes.STRING, allowNull: false, defaultValue: "" },
+    grytGuildId: { type: DataTypes.STRING, allowNull: false },
+    grytChannelId: { type: DataTypes.STRING, allowNull: false },
+    grytWebhookId: { type: DataTypes.STRING, allowNull: false },
+    grytWebhookToken: { type: DataTypes.STRING, allowNull: false },
     bridgeType: {
-      type: DataTypes.ENUM("discord2fluxer", "fluxer2discord", "both"),
+      type: DataTypes.ENUM("discord2gryt", "gryt2discord", "both"),
       allowNull: false,
       defaultValue: "both",
     },
-    fluxerGuildMapId: {
+    grytGuildMapId: {
       type: DataTypes.INTEGER,
-      field: "FluxerGuildMapId",
+      field: "GrytGuildMapId",
       references: { model: GuildMap, key: "id" },
     },
     discordGuildMapId: {
@@ -110,14 +111,22 @@ ChannelMap.init(
 MessageMap.init(
   {
     messageSource: {
-      type: DataTypes.ENUM("discord", "fluxer"),
+      type: DataTypes.ENUM("discord", "gryt"),
       allowNull: false,
     },
     discordMessageId: { type: DataTypes.STRING, allowNull: false },
-    fluxerMessageId: { type: DataTypes.STRING, allowNull: false },
+    grytMessageId: { type: DataTypes.STRING, allowNull: false },
     discordReplyId: { type: DataTypes.STRING, allowNull: true },
-    fluxerReplyId: { type: DataTypes.STRING, allowNull: true },
+    grytReplyId: { type: DataTypes.STRING, allowNull: true },
     authorId: { type: DataTypes.STRING, allowNull: false },
+    // How the Gryt copy was posted. A webhook message keeps the author's name
+    // and picture but cannot be edited; a bot-sent one can be edited and can
+    // carry files. Handlers read this to know which is which.
+    grytSentVia: {
+      type: DataTypes.ENUM("webhook", "bot"),
+      allowNull: false,
+      defaultValue: "webhook",
+    },
     channelMapId: {
       type: DataTypes.INTEGER,
       field: "ChannelMapId",
@@ -129,7 +138,7 @@ MessageMap.init(
 
 UserConfig.init(
   {
-    userType: { type: DataTypes.ENUM("discord", "fluxer"), allowNull: false },
+    userType: { type: DataTypes.ENUM("discord", "gryt"), allowNull: false },
     userId: { type: DataTypes.STRING, allowNull: false },
     doNotBridgePrefix: {
       type: DataTypes.STRING,
@@ -153,33 +162,16 @@ ChannelMap.belongsTo(GuildMap, {
   as: "discordGuildMap",
 });
 ChannelMap.belongsTo(GuildMap, {
-  foreignKey: "fluxerGuildMapId",
-  as: "fluxerGuildMap",
+  foreignKey: "grytGuildMapId",
+  as: "grytGuildMap",
 });
 GuildMap.hasMany(ChannelMap, {
   foreignKey: "discordGuildMapId",
   as: "discordChannelMaps",
 });
 GuildMap.hasMany(ChannelMap, {
-  foreignKey: "fluxerGuildMapId",
-  as: "fluxerChannelMaps",
+  foreignKey: "grytGuildMapId",
+  as: "grytChannelMaps",
 });
 
-VoiceChannelMap.init(
-  {
-    discordGuildId: { type: DataTypes.STRING, allowNull: false },
-    discordChannelId: { type: DataTypes.STRING, allowNull: false },
-    fluxerGuildId: { type: DataTypes.STRING, allowNull: false },
-    fluxerChannelId: { type: DataTypes.STRING, allowNull: false },
-  },
-  { sequelize, modelName: "VoiceChannelMap" },
-);
-
-export {
-  sequelize,
-  ChannelMap,
-  MessageMap,
-  UserConfig,
-  GuildMap,
-  VoiceChannelMap,
-};
+export { sequelize, ChannelMap, MessageMap, UserConfig, GuildMap };

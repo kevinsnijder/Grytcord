@@ -1,16 +1,17 @@
 import { log } from "./Logger.js";
 
 /**
+ * Discord's two-step upload: ask for somewhere to put the bytes, PUT them
+ * there, then name the result on the message. Bigger files than a plain
+ * multipart send allows, and it is how the Gryt to Discord direction carries
+ * attachments.
+ *
  * @param {import("discord.js").Client} discordClient
  * @param {string} channelId
  * @param {Array<{ attachment: Buffer, name: string, description?: string }>} files
  * @returns {Promise<Array<{ id: string, filename: string, uploaded_filename: string, description?: string }>>}
  */
-export async function cloudUploadAttachments(
-  discordClient,
-  channelId,
-  files,
-) {
+export async function cloudUploadAttachments(discordClient, channelId, files) {
   const created =
     /** @type {{ attachments: Array<{ id?: string, upload_url: string, upload_filename: string }> }} */ (
       await discordClient.rest.post(`/channels/${channelId}/attachments`, {

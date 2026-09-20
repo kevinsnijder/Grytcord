@@ -1,27 +1,25 @@
-import { EmbedBuilder, Routes as FluxerRoutes, Message } from "@fluxerjs/core";
 import { Routes } from "discord.js";
 import { ChannelMap, MessageMap } from "../db/index.js";
 import { getDuration } from "../utils/GetDuration.js";
 import { botStartingTime } from "../index.js";
 import Config from "../utils/ConfigHandler.js";
+import { editSent, isGryt, replyTo } from "../utils/Compat.js";
 
 /**
- * @type {import('../utils/CommandSchema.js').CommandSchema}
+ * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
  */
 const command = {
   name: "ping",
   description: "...pong? (bot latency and stats)",
   aliases: ["stats", "uptime"],
   requireElevated: false,
-  async run(params, message, discordClient, fluxerClient) {
-    const isFluxer = message instanceof Message;
+  async run(params, message, discordClient, grytClient) {
     const now = new Date();
+
     const messageStart = Date.now();
-    const msg = await message.reply("Pinging...");
+    const sent = await replyTo(message, "Pinging...");
     const messageLatency = Date.now() - messageStart;
-    const fluxerRestStart = Date.now();
-    await fluxerClient.rest.get(FluxerRoutes.currentUser());
-    const fluxerRestLatency = Date.now() - fluxerRestStart;
+
     const discordRestStart = Date.now();
     await discordClient.rest.get(Routes.currentApplication());
     const discordRestLatency = Date.now() - discordRestStart;
@@ -29,45 +27,35 @@ const command = {
     const messagesBridged = await MessageMap.count();
     const channelsBridged = await ChannelMap.count();
     const discordGuildCount = discordClient.guilds.cache.size;
-    const fluxerGuildCount = fluxerClient.guilds.size;
     const discordMemberCount = discordClient.guilds.cache.reduce(
       (acc, guild) => acc + guild.memberCount,
       0,
     );
-    const fluxerMemberCount = fluxerClient.guilds.reduce(
-      (acc, guild) => acc + (guild.memberCount ?? guild.members.size),
+
+    const grytServers = [...grytClient.servers.values()];
+    const grytMemberCount = grytServers.reduce(
+      (acc, server) => acc + server.members.size,
       0,
     );
+
     const heapMb =
       Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 10) / 10;
+
     const discordPing =
       typeof discordClient.ws.ping === "number" && discordClient.ws.ping >= 0
         ? `${Math.round(discordClient.ws.ping)}ms`
         : "n/a";
-    const fluxerPing =
-      fluxerClient.isReady() &&
-      typeof fluxerClient.ws.ping === "number" &&
-      fluxerClient.ws.ping >= 0
-        ? `${Math.round(fluxerClient.ws.ping)}ms`
-        : "n/a";
-    await msg.edit({
+
+    await editSent(sent, {
       content: "",
-      //@ts-expect-error
       embeds: [
-        new EmbedBuilder()
-          .setTitle("Pong!")
-          .setDescription(
-            `Bridging ${channelsBridged} channel${channelsBridged === 1 ? "" : "s"} (${messagesBridged} messages) for ${getDuration(botStartingTime, now)}`,
-          )
-          .addFields(
+        {
+          title: "Pong!",
+          description: `Bridging ${channelsBridged} channel${channelsBridged === 1 ? "" : "s"} (${messagesBridged} messages) for ${getDuration(botStartingTime, now)}`,
+          fields: [
             {
-              name: (isFluxer ? "Fluxer" : "Discord") + " round-trip",
+              name: `${isGryt(message) ? "Gryt" : "Discord"} round-trip`,
               value: `${messageLatency}ms`,
-              inline: true,
-            },
-            {
-              name: "Fluxer REST",
-              value: `${fluxerRestLatency}ms`,
               inline: true,
             },
             {
@@ -75,72 +63,32 @@ const command = {
               value: `${discordRestLatency}ms`,
               inline: true,
             },
-            {
-              name: "Discord gateway",
-              value: discordPing,
-              inline: true,
-            },
-            {
-              name: "Fluxer gateway",
-              value: fluxerPing,
-              inline: true,
-            },
-            {
-              name: "Memory",
-              value: `${heapMb} MB`,
-              inline: true,
-            },
-            {
-              name: "Fluxer uptime",
-              value: getDuration(fluxerClient.readyAt ?? now, now),
-              inline: true,
-            },
-            {
-              name: "Discord uptime",
-              value: getDuration(discordClient.readyAt ?? now, now),
-              inline: true,
-            },
-            {
-              name: "\u200b",
-              value: "\u200b",
-              inline: true,
-            },
+            { name: "Discord gateway", value: discordPing, inline: true },
+            { name: "Memory", value: `${heapMb} MB`, inline: true },
             {
               name: "Discord guilds",
-              value: discordGuildCount + "",
+              value: `${discordGuildCount}`,
               inline: true,
             },
             {
-              name: "Fluxer guilds",
-              value: fluxerGuildCount + "",
-              inline: true,
-            },
-            {
-              name: "\u200b",
-              value: "\u200b",
+              name: "Gryt servers",
+              value:
+                grytServers
+                  .map((x) => `${x.name} (${x.ready ? "online" : "offline"})`)
+                  .join("\n") || "none",
               inline: true,
             },
             {
               name: "Discord members",
-              value: discordMemberCount + "",
+              value: `${discordMemberCount}`,
               inline: true,
             },
-            {
-              name: "Fluxer members",
-              value: fluxerMemberCount + "",
-              inline: true,
-            },
-            {
-              name: "\u200b",
-              value: "\u200b",
-              inline: true,
-            },
-          )
-          .setFooter(
-            Config.EmbedFooterContent
-              ? { text: Config.EmbedFooterContent }
-              : null,
-          ),
+            { name: "Gryt members", value: `${grytMemberCount}`, inline: true },
+          ],
+          ...(Config.EmbedFooterContent
+            ? { footer: { text: Config.EmbedFooterContent } }
+            : {}),
+        },
       ],
     });
   },

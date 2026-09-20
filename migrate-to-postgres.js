@@ -4,22 +4,18 @@ import { Umzug, SequelizeStorage } from "umzug";
 import Config from "./utils/ConfigHandler.js";
 import sqlite3 from "@journeyapps/sqlcipher";
 
-const TABLES = [
-  "GuildMaps",
-  "ChannelMaps",
-  "MessageMaps",
-  "UserConfigs",
-  "VoiceChannelMaps",
-];
+const TABLES = ["GuildMaps", "ChannelMaps", "MessageMaps", "UserConfigs"];
 
 const force = process.argv.includes("--force");
 
 if (!Config.PostgresConnectionString) {
-  console.error("PostgresConnectionString is not set. Set it in config.js before running this script.");
+  console.error(
+    "PostgresConnectionString is not set. Set it in config.js before running this script.",
+  );
   process.exit(1);
 }
 
-const dbPath = Config.DataFolderPath + "/fluxcord.db";
+const dbPath = Config.DataFolderPath + "/grytcord.db";
 
 if (!fs.existsSync(dbPath)) {
   console.error(`SQLite database not found at ${dbPath}. Nothing to migrate.`);
@@ -37,12 +33,15 @@ async function openSource() {
     });
     try {
       await keyed.query("PRAGMA cipher_compatibility = 4;");
-      await keyed.query(`PRAGMA key = ${keyed.escape(Config.DatabaseEncryptionToken)};`);
+      await keyed.query(
+        `PRAGMA key = ${keyed.escape(Config.DatabaseEncryptionToken)};`,
+      );
       await keyed.query("SELECT count(*) FROM sqlite_master;");
       return { sequelize: keyed, encrypted: true };
     } catch {
       await keyed.close();
     }
+
     const plain = new Sequelize({
       dialect: "sqlite",
       dialectModule: sqlite3,
@@ -51,15 +50,18 @@ async function openSource() {
     });
     try {
       await plain.query("SELECT count(*) FROM sqlite_master;");
-      console.warn("DatabaseEncryptionToken is set but the SQLite database is not encrypted. Migrating plaintext database.");
+      console.warn(
+        "DatabaseEncryptionToken is set but the SQLite database is not encrypted. Migrating plaintext database.",
+      );
       return { sequelize: plain, encrypted: false };
-    } catch (err) {
+    } catch {
       await plain.close();
       throw new Error(
         "Could not open SQLite database with or without the encryption token. Check DatabaseEncryptionToken.",
       );
     }
   }
+
   const plain = new Sequelize({
     dialect: "sqlite",
     dialectModule: sqlite3,
@@ -70,7 +72,9 @@ async function openSource() {
     await plain.query("SELECT count(*) FROM sqlite_master;");
   } catch {
     await plain.close();
-    console.error("Could not open SQLite database. If it is encrypted, set DatabaseEncryptionToken in config.js first.");
+    console.error(
+      "Could not open SQLite database. If it is encrypted, set DatabaseEncryptionToken in config.js first.",
+    );
     process.exit(1);
   }
   return { sequelize: plain, encrypted: false };
@@ -107,7 +111,9 @@ console.log("Postgres schema is up to date.");
 const targetQi = target.getQueryInterface();
 
 async function countRows(seq, table) {
-  const [[row]] = await seq.query(`SELECT COUNT(*)::int AS "count" FROM "${table}";`);
+  const [[row]] = await seq.query(
+    `SELECT COUNT(*)::int AS "count" FROM "${table}";`,
+  );
   return row.count;
 }
 
@@ -124,7 +130,9 @@ if (!force) {
     }
   }
 } else {
-  await target.query('TRUNCATE "MessageMaps", "ChannelMaps", "GuildMaps", "UserConfigs", "VoiceChannelMaps" RESTART IDENTITY CASCADE;');
+  await target.query(
+    'TRUNCATE "MessageMaps", "ChannelMaps", "GuildMaps", "UserConfigs" RESTART IDENTITY CASCADE;',
+  );
 }
 
 for (const table of TABLES) {
@@ -165,4 +173,6 @@ if (mismatch) {
   process.exit(1);
 }
 
-console.log("Done! Set PostgresConnectionString in config.js and start the bot to use Postgres.");
+console.log(
+  "Done! Set PostgresConnectionString in config.js and start the bot to use Postgres.",
+);

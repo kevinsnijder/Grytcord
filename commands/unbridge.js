@@ -1,6 +1,8 @@
-import { ChannelMap, MessageMap, sequelize } from "../db/index.js";
 import { Op } from "sequelize";
+import { ChannelMap, MessageMap } from "../db/index.js";
 import { BridgeMap } from "../utils/CommandHandler.js";
+import { replyTo } from "../utils/Compat.js";
+import { log } from "../utils/Logger.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -9,16 +11,12 @@ const command = {
   name: "unbridge",
   description: "Unbridge the current channel",
   requireElevated: true,
-  async run(params, message, discordClient, fluxerClient) {
+  async run(params, message, discordClient, grytClient) {
     const channelMap = await ChannelMap.findOne({
       where: {
         [Op.or]: [
-          {
-            fluxerChannelId: message.channelId,
-          },
-          {
-            discordChannelId: message.channelId,
-          },
+          { grytChannelId: message.channelId },
+          { discordChannelId: message.channelId },
         ],
       },
     });
@@ -26,34 +24,39 @@ const command = {
     if (!channelMap) {
       if (BridgeMap.has(message.channelId)) {
         BridgeMap.delete(message.channelId);
-
-        await message.reply("Cancelled bridging request.");
+        await replyTo(message, "Cancelled bridging request.");
         return;
       }
 
-      await message.reply("This channel is already unbridged.");
+      await replyTo(message, "This channel is already unbridged.");
       return;
     }
 
-    try {
-      await discordClient.deleteWebhook(channelMap.discordWebhookId, {
-        token: channelMap.discordWebhookToken,
-      });
-    } catch {}
+    const discordWebhookId = channelMap.get("discordWebhookId");
+    if (discordWebhookId) {
+      try {
+        await discordClient.deleteWebhook(discordWebhookId, {
+          token: channelMap.get("discordWebhookToken"),
+        });
+      } catch (e) {
+        log("DISCORD", "Could not delete the Discord bridge webhook", e);
+      }
+    }
 
-    try {
-      const channel = /** @type {TextChannel} */ (
-        await fluxerClient.channels.fetch(channelMap.fluxerChannelId)
-      );
-      const webhooks = await channel.fetchWebhooks();
-      const webhook = webhooks.find((x) => x.id === channelMap.fluxerWebhookId);
-      await webhook?.delete();
-    } catch {}
+    const grytWebhookId = channelMap.get("grytWebhookId");
+    if (grytWebhookId) {
+      const server = grytClient.serverFor(channelMap.get());
+      try {
+        await server?.deleteWebhook(grytWebhookId);
+      } catch (e) {
+        log("GRYT", "Could not delete the Gryt bridge webhook", e);
+      }
+    }
 
-    await MessageMap.destroy({ where: { channelMapId: channelMap.id } });
+    await MessageMap.destroy({ where: { channelMapId: channelMap.get("id") } });
     await channelMap.destroy();
 
-    await message.reply("Successfully unbridged!");
+    await replyTo(message, "Successfully unbridged!");
   },
 };
 

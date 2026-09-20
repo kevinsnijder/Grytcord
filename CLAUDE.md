@@ -1,2 +1,57 @@
-ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL_1FAEFB6177B4672DEE07F9D3AFC62588CCD2631EDCF22E8CCC1FB35B501C9C86
-ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB
+# Grytcord
+
+A Discord <-> Gryt bridge. Ported from Fluxcord (Discord <-> Fluxer), which is
+worth reading when something here looks odd: most of the structure is its
+structure.
+
+## Layout
+
+```
+index.js                  wiring: both clients, every event, startup
+db/index.js               Sequelize models (SQLite/SQLCipher or Postgres)
+migrations/               umzug migrations, run by `pnpm run migrate`
+commands/                 one file per command, loaded at runtime
+utils/GrytClient.js       every Gryt server behind one event stream
+utils/GrytMessage.js      one Gryt message, in the shape the rest talks in
+utils/DiscordHandler.js   Discord -> Gryt
+utils/GrytHandler.js      Gryt -> Discord
+utils/Compat.js           one payload shape, rendered per platform
+```
+
+## The two things to know before changing a handler
+
+**1. Gryt gives a bot two ways to post, and they are not interchangeable.**
+
+- A *webhook* message carries the author's name and picture and can hold cards
+  (embeds). It cannot hold files, cannot carry a reply, and **cannot be edited**
+  — `chat:edit` is own-messages-only and a webhook message is not the bot's.
+- A *bot* message (`chat:send`) can hold real uploads and a real reply, and can
+  be edited and deleted later. It has no per-message name or picture, and no
+  cards.
+
+Grytcord posts through the webhook unless the message has files. Which route was
+taken is stored as `grytSentVia` on the MessageMap row, and the edit and delete
+handlers read it. Do not make either handler guess.
+
+**2. A Gryt reaction is a toggle, not add/remove.** `GrytServerConnection` keeps
+the last known reaction state per message so a relayed removal removes rather
+than adds. `setReaction` is the only thing that should call `chat:react`.
+
+## Things Gryt does not have
+
+Pins. Message URLs. Bulk delete (deleting several is several deletes). Per-member
+permissions a bot can read — which is why elevation on the Gryt side is a role
+check against `GrytElevatedRoles`.
+
+## Deliberate behaviour
+
+Creating a bridge posts **nothing into the Discord channel**. The Gryt side gets
+an announcement; the Discord side gets only the reply to the command that was
+typed. This is a requirement, not an oversight — see `announceBridge`.
+
+Voice bridging is not ported.
+
+## Style
+
+Plain JS with JSDoc types, ESM, two-space indent, same as Fluxcord. `pnpm
+--package=typescript dlx tsc --noEmit` is the only check that runs in CI.

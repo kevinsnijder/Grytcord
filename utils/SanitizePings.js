@@ -1,5 +1,5 @@
 /**
- * Sanitizes everyone, here and role mentions so they don't trigger when bridged (STUPID WEBHOOK SHIT)
+ * Sanitizes everyone/here mentions so they don't trigger when bridged.
  *
  * @param {string} content
  * @param {boolean} userHasPingPerms

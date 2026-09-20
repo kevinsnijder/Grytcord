@@ -1,4 +1,4 @@
-// If you fork Fluxcord, fill up this thing!
+// If you fork Grytcord, fill up this thing!
 // It's not required, but its encouraged!
 
 const ForkDetails = {
@@ -7,7 +7,6 @@ const ForkDetails = {
   forkVersion: "",
   forkDescription: "",
   forkRepo: "",
-  forkVoiceRepo: "",
   forkEnableSupport: false,
 };
 

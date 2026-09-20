@@ -1,11 +1,26 @@
 const Config = {
-  // The base URL of the Fluxer API. Change this only if you're using a self-hosted instance.
-  // FluxerAPIBaseURL: "https://example.com/api",
-  FluxerAPIBaseURL: "https://api.fluxer.app",
+  // The Gryt servers this bot connects to.
+  // `host` is the server's address ("chat.example.com" or "localhost:5001").
+  // `botToken` is optional: it's a single-use claim token from a registration an
+  // admin set up in advance. Without it, the bot knocks and waits for an admin to
+  // approve it in Server settings > Bots (no restart needed, the approval is live).
+  GrytServers: [
+    {
+      host: "chat.example.com",
+      // botToken: "",
+    },
+  ],
 
-  // Optional. Self-hosted instances serve avatars/media from `/media`.
-  // FluxerCDNBaseURL: "https://example.com/media",
-  FluxerCDNBaseURL: "https://fluxerusercontent.com",
+  // The name the bot shows up as in the Gryt member list.
+  GrytNickname: "Grytcord",
+
+  // One line shown to the admin who approves the bot.
+  GrytDescription: "Bridges channels between Discord and this server.",
+
+  // Where the bot's Gryt identity key lives. THE FILE IS THE BOT: keep it and the
+  // bot keeps its id, name, role and history across restarts. Lose it and the
+  // server sees a stranger knocking, holding nothing. In Docker that means a volume.
+  GrytIdentityPath: "/data/gryt-bot-identity.json",
 
   // The path for the bot's data directory. Probably do not touch if you're using Docker.
   DataFolderPath: "/data",
@@ -16,73 +31,58 @@ const Config = {
   DatabaseEncryptionToken: "",
 
   // Optional. When set, PostgreSQL is used instead of SQLite.
-  // When empty/unset, SQLite (DataFolderPath + "/fluxcord.db") is used.
+  // When empty/unset, SQLite (DataFolderPath + "/grytcord.db") is used.
   // The DatabaseEncryptionToken is ignored in Postgres mode, and
   // `pnpm run migrate:to-postgres` can copy your existing SQLite data
   // (decrypting it first if needed) into Postgres.
-  // Example: "postgres://user:password@localhost:5432/fluxcord"
+  // Example: "postgres://user:password@localhost:5432/grytcord"
   // PostgresConnectionString: "",
 
   // The Discord bot token
   DiscordBotToken: "DISCORD_BOT_TOKEN",
 
-  // Additional bot tokens for voice bridging multiple voice channels at the same time. Optional.
-  DiscordVoiceTokens: [
-    // "VOICE_TOKEN_1",
-    // "VOICE_TOKEN_2",
-  ],
-
   // The Discord client ID
   DiscordClientId: "0000000000000000000",
 
-  // The Fluxer bot token
-  FluxerBotToken: "FLUXER_BOT_TOKEN",
-
-  // The Fluxer temporary emoji store community ID
-  FluxerTempEmojiGuildId: "0000000000000000000",
-
-  // The admin account IDs. Allows accessing admin commands, and
-  // also allows verifying bridging without having Manage Channel perms.
+  // The admin account IDs (Discord user IDs and/or Gryt server user IDs).
+  // Allows accessing admin commands, and also allows verifying bridging
+  // without having Manage Server permissions.
   AdminAccountIds: ["0000000000000000000"],
 
-  // The start line of the per-server bios of the bot.
-  // Changes every bot start
-  FluxerBioStart: "",
+  // Gryt roles that count as "can configure the bridge" on the Gryt side.
+  // Compared case-insensitively against a member's roles.
+  GrytElevatedRoles: ["owner", "admin"],
+
+  // The start line of the per-server bio of the bot on Discord.
   DiscordBioStart: "",
 
-  // The footer of every embed sent by Fluxcord. Optional.
+  // The footer of every embed sent by Grytcord. Optional.
   EmbedFooterContent: "",
 
   // The categories that the bot will log, remove any that you don't need.
-  // Categories: FLUXER, DISCORD, DB, META, VOICE, DEBUG
-  LoggingCategories: ["FLUXER", "DISCORD", /*'DB',*/ "META", "VOICE"],
+  // Categories: GRYT, DISCORD, DB, META, DEBUG
+  LoggingCategories: ["GRYT", "DISCORD", /*'DB',*/ "META"],
 
   // The list of MOTDs for the bot. If not specified or it is empty, it'll be disabled.
   // Examples:
-  //  { name: "MOTD 1!" }
-  //  { name: "MOTD 2!", emoji: "✉️" },
-  //  { name: "MOTD 3!", emoji: { discord: "✉️", fluxer: { name: "customEmoji", id: "123456789000000" } } }
+  //  { text: "MOTD 1!" }
+  //  { text: "MOTD 2!", emoji: "✉️" },
   Motds: [],
 
   // The prefix of the bot
-  BotPrefix: "fc!",
+  BotPrefix: "gc!",
 
-  // The port the voice runner WebSocket server listens on.
-  RunnerWsPort: 8765,
+  // Max attachment size (in bytes) Grytcord will try to carry from Discord to
+  // Gryt. Gryt's own per-file limit is a server setting; this is just the point
+  // where Grytcord stops trying and posts a link instead.
+  MaxAttachmentBytes: 25_000_000,
 
-  // Secret shared between the core bot and voice runners. Set to a long random string.
-  RunnerSecret: "",
-
-  // Healthcheck. Returns 200 when both bots are online.
+  // Healthcheck. Returns 200 when Discord and at least one Gryt server are online,
   // otherwise 503. Used by Docker HEALTHCHECK / compose healthcheck.
   // Set HealthcheckEnabled to false to disable.
   // HealthcheckEnabled: true,
   // HealthcheckPort: 8080,
   // HealthcheckHost: "0.0.0.0",
-
-  // Enable voice channel bridging. Manage mappings with setup and unbridge commands.
-  // Requires the voice repository.
-  // VoiceBridgingEnabled: false,
 };
 
 export default Config;

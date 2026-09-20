@@ -1,77 +1,110 @@
-import { EmbedBuilder, TextChannel as FluxerTextChannel } from "@fluxerjs/core";
+import { Op } from "sequelize";
 import { MessageMap } from "../db/index.js";
-import { Op, or } from "sequelize";
-import { ChannelType, TextChannel } from "discord.js";
 import { genMsgLink } from "./GenMsgLink.js";
+import { cardsToText, cardToDiscordEmbed } from "./EmbedConverter.js";
+import { isGryt } from "./Compat.js";
+import { log } from "./Logger.js";
 
 /**
- * @param {import("@fluxerjs/core").Message | import("discord.js").Message} message
- * @param {import("@fluxerjs/core").User | import("discord.js").User} user
+ * React with ℹ️ and the bot tells you, privately, where a bridged message
+ * actually came from: which side wrote it, who wrote it, and where to find the
+ * original.
+ *
+ * @param {any} message the message that was reacted to
+ * @param {any} user the person who asked (a Discord user, or a Gryt reaction change)
  * @param {import("discord.js").Client} discordClient
- * @param {import("@fluxerjs/core").Client} fluxerClient
+ * @param {import("./GrytClient.js").GrytClient} grytClient
  */
-export async function sendBridgeInfo(
-  message,
-  user,
-  discordClient,
-  fluxerClient,
-) {
-  const embed = new EmbedBuilder();
-  embed.setURL(await genMsgLink(message));
+export async function sendBridgeInfo(message, user, discordClient, grytClient) {
   const messageMap = await MessageMap.findOne({
     where: {
       [Op.or]: {
         discordMessageId: message.id,
-        fluxerMessageId: message.id,
+        grytMessageId: message.id,
       },
     },
     include: ["channelMap"],
   });
   if (!messageMap) return;
-  let origChannel;
-  try {
-    origChannel =
-      messageMap.messageSource === "fluxer"
-        ? await fluxerClient.channels.fetch(
-            messageMap.channelMap.fluxerChannelId,
-          )
-        : await discordClient.channels.fetch(
-            messageMap.channelMap.discordChannelId,
-          );
-  } catch {
-    return;
-  }
-  if (!origChannel) return;
-  if (origChannel instanceof FluxerTextChannel) {
-    const message = await origChannel.messages.fetch(
-      messageMap.fluxerMessageId,
-    );
-    embed.setTitle(`Message ${message.id} on #${origChannel.name}`);
-    embed.setDescription(
-      `[Jump to message on original platform](${await genMsgLink(message)})`,
-    );
-    embed.addFields({
+
+  const channelMap = messageMap.get("channelMap");
+  if (!channelMap) return;
+
+  const fromGryt = messageMap.get("messageSource") === "gryt";
+
+  /** @type {any} */
+  const card = {
+    title: `Message ${message.id}`,
+    color: 0x5865f2,
+    fields: [],
+  };
+
+  if (fromGryt) {
+    const server = grytClient.serverFor(channelMap);
+    const original = server
+      ? await server
+          .fetchMessage(channelMap.grytChannelId, messageMap.get("grytMessageId"))
+          .catch(() => null)
+      : null;
+
+    card.description = `Written on Gryt (${channelMap.grytHost}), in #${
+      server?.channels.get(channelMap.grytChannelId)?.name ?? channelMap.grytChannelId
+    }.`;
+    card.fields.push({
       name: "Author",
-      value: `@${message.author.username}#${message.author.discriminator} (${message.author.id})`,
+      value: original
+        ? `${original.author.username} (${original.senderId})`
+        : messageMap.get("authorId"),
       inline: true,
     });
-  } else if (origChannel.isTextBased()) {
-    const message = await origChannel.messages.fetch(
-      messageMap.discordMessageId,
-    );
-    embed.setTitle(`Message ${message.id} on #${origChannel.name}`);
-    embed.setDescription(
-      `[Jump to message on original platform](${await genMsgLink(message)})`,
-    );
-    embed.addFields({
+    card.fields.push({
+      name: "Bridged copy",
+      value: `https://discord.com/channels/${channelMap.discordGuildId}/${channelMap.discordChannelId}/${messageMap.get("discordMessageId")}`,
+      inline: false,
+    });
+  } else {
+    const original = await discordClient.channels
+      .fetch(channelMap.discordChannelId)
+      .then((channel) => channel?.messages?.fetch(messageMap.get("discordMessageId")))
+      .catch(() => null);
+
+    card.description = "Written on Discord.";
+    card.fields.push({
       name: "Author",
-      value: `@${message.author.tag} (${message.author.id})`,
+      value: original
+        ? `${original.author.tag} (${original.author.id})`
+        : messageMap.get("authorId"),
       inline: true,
+    });
+    card.fields.push({
+      name: "Original",
+      value: `https://discord.com/channels/${channelMap.discordGuildId}/${channelMap.discordChannelId}/${messageMap.get("discordMessageId")}`,
+      inline: false,
+    });
+    card.fields.push({
+      name: "Posted on Gryt as",
+      value: `${messageMap.get("grytSentVia") === "bot" ? "a bot message (carries files, can be edited)" : "a webhook message (keeps the author's name and picture)"}`,
+      inline: false,
     });
   }
 
-  const dm = await user.createDM();
-  await dm.send({
-    embeds: [embed],
-  });
+  try {
+    if (isGryt(message)) {
+      // The asker is a Gryt member: answer in a direct message, so the channel
+      // stays as it was.
+      const server = message.server;
+      const conversationId = await server.openDm(user.serverUserId ?? user.id);
+      if (!conversationId) return;
+      await server.sendMessage(conversationId, {
+        text: `${card.title}\n${card.description}\n\n${cardsToText([card])}`,
+      });
+    } else {
+      const embed = cardToDiscordEmbed(card);
+      embed?.setURL(await genMsgLink(message).catch(() => null));
+      const dm = await user.createDM();
+      await dm.send({ embeds: embed ? [embed] : [] });
+    }
+  } catch (e) {
+    log("META", "Could not deliver bridge info", e);
+  }
 }

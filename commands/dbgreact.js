@@ -1,4 +1,5 @@
 import { GuildMap } from "../db/index.js";
+import { replyTo } from "../utils/Compat.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -10,22 +11,15 @@ const command = {
   description: "Reaction debug",
   requireElevated: false,
   requireOwner: true,
-  async run(params, message, discordClient, fluxerClient) {
+  async run(params, message) {
     const guildMap = await GuildMap.findOne({
-      where: {
-        guildId: message.guildId,
-      },
+      where: { guildId: message.guildId },
     });
 
-    if (guildMap) {
-      if (guildMap.errorReaction) {
-        await message.react(guildMap.errorReaction);
-      }
-    } else {
-      await message.react("⛓️‍💥");
-    }
+    const reaction = guildMap?.get("errorReaction") ?? "⛓️‍💥";
+    if (reaction) await message.react(reaction);
 
-    await message.reply("done");
+    await replyTo(message, "done");
   },
 };
 

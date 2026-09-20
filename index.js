@@ -1,19 +1,14 @@
 //@ts-check
-import { Events as FluxerEvents, Client as FluxerClient } from "@fluxerjs/core";
 import {
   Client as DiscordClient,
   Events as DiscordEvents,
   GatewayIntentBits,
   Partials,
 } from "discord.js";
+import { Op } from "sequelize";
 import Config from "./utils/ConfigHandler.js";
-import {
-  FluxerBulkDeleteMessageHandler,
-  FluxerCreateMessageHandler,
-  FluxerDeleteMessageHandler,
-  FluxerPinsUpdateHandler,
-  FluxerUpdateMessageHandler,
-} from "./utils/FluxerHandler.js";
+import { ChannelMap, GuildMap, MessageMap } from "./db/index.js";
+import { GrytClient } from "./utils/GrytClient.js";
 import {
   DiscordBulkDeleteMessageHandler,
   DiscordCreateMessageHandler,
@@ -21,20 +16,19 @@ import {
   DiscordPinsUpdateHandler,
   DiscordUpdateMessageHandler,
 } from "./utils/DiscordHandler.js";
+import {
+  GrytCreateMessageHandler,
+  GrytDeleteMessageHandler,
+  GrytPurgeUserHandler,
+  GrytUpdateMessageHandler,
+} from "./utils/GrytHandler.js";
 import { log } from "./utils/Logger.js";
-import fs from "node:fs";
-import { Op } from "sequelize";
-import { ChannelMap, GuildMap, MessageMap } from "./db/index.js";
 import { sendErrorMessage } from "./utils/SendErrorMessage.js";
-import { genAuthLink, renderBox } from "./utils/GenAuthLink.js";
+import { discordAuthLink, grytJoinHint, renderBox } from "./utils/GenAuthLink.js";
 import { setupReactionHandling } from "./utils/ReactionHandler.js";
 import { setupHealthcheck } from "./utils/HealthCheck.js";
-import { ensureLoadingEmojis } from "./utils/LoadingEmojiSetup.js";
-import {
-  buildDiscordUserAgentSuffix,
-  buildExtHttpUserAgent,
-  buildFluxerUserAgent,
-} from "./utils/UserAgent.js";
+import { ensureBotEmojis } from "./utils/BotEmojiSetup.js";
+import { buildDiscordUserAgentSuffix } from "./utils/UserAgent.js";
 
 const discordClient = new DiscordClient({
   rest: {
@@ -45,7 +39,6 @@ const discordClient = new DiscordClient({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildMessageTyping,
   ],
@@ -54,75 +47,41 @@ const discordClient = new DiscordClient({
 
 export const botStartingTime = new Date();
 
-const maps = await ChannelMap.findAll();
-
-const fluxerClient = new FluxerClient({
-  rest: {
-    api: Config.FluxerAPIBaseURL,
-    userAgent: buildFluxerUserAgent(),
-  },
-  presence: {
-    status: "online",
-    customStatus: {
-      text: `${Config.BotPrefix}help | bridging ${maps.length} channel${maps.length > 1 ? "s" : ""}`,
-    },
-  },
-  cache: {
-    guilds: Infinity,
-  },
-});
-
-fluxerClient.on(FluxerEvents.Error, (error) => {
-  log("FLUXER", error);
-});
+const grytClient = new GrytClient();
 
 /**
- * @param {{ discordChannelId?: string, fluxerChannelId?: string, discordGuildId?: string }} where
+ * @param {{ discordChannelId?: string, grytChannelId?: string, discordGuildId?: string }} where
  */
 async function destroyChannelMaps(where) {
-  const channelMaps = await ChannelMap.findAll({
-    where,
-    attributes: ["id"],
-  });
+  const channelMaps = await ChannelMap.findAll({ where, attributes: ["id"] });
   if (channelMaps.length > 0) {
     await MessageMap.destroy({
-      where: {
-        channelMapId: channelMaps.map((c) => c.get("id")),
-      },
+      where: { channelMapId: channelMaps.map((c) => c.get("id")) },
     });
   }
   await ChannelMap.destroy({ where });
 }
 
-/** @param {import("sequelize").Model} channelMap */
+/** @param {any} channelMap */
 async function isTypingEnabled(channelMap) {
   const guildMaps = await GuildMap.findAll({
     where: {
       [Op.or]: [
-        {
-          guildId: channelMap.get("discordGuildId"),
-          guildType: "discord",
-        },
-        {
-          guildId: channelMap.get("fluxerGuildId"),
-          guildType: "fluxer",
-        },
+        { guildId: channelMap.get("discordGuildId"), guildType: "discord" },
+        { guildId: channelMap.get("grytGuildId"), guildType: "gryt" },
       ],
     },
   });
   return !guildMaps.some((g) => g.get("typingEnabled") === false);
 }
 
+// ── Discord ───────────────────────────────────────────────────────
+
 discordClient.on(DiscordEvents.GuildDelete, async (guild) => {
   if (!guild.available) return;
-
   try {
     await destroyChannelMaps({ discordGuildId: guild.id });
-    await GuildMap.destroy({
-      where: {
-        guildId: guild.id,
-      },
-    });
+    await GuildMap.destroy({ where: { guildId: guild.id } });
   } catch (e) {
     log("DB", `GuildDelete cleanup failed for guild ${guild.id}`, e);
   }
@@ -144,23 +103,18 @@ discordClient.on(DiscordEvents.ThreadDelete, async (thread) => {
   }
 });
 
-discordClient.on(DiscordEvents.TypingStart, async (type) => {
-  if (type.user.id === discordClient.user?.id) return;
+discordClient.on(DiscordEvents.TypingStart, async (typing) => {
+  if (typing.user.id === discordClient.user?.id) return;
 
   try {
     const channelMap = await ChannelMap.findOne({
-      where: {
-        discordChannelId: type.channel.id,
-      },
+      where: { discordChannelId: typing.channel.id },
     });
-
     if (!channelMap || !(await isTypingEnabled(channelMap))) return;
 
-    const channel = await fluxerClient.channels.fetch(
-      //@ts-expect-error
-      channelMap.fluxerChannelId,
-    );
-    await channel.sendTyping();
+    const server = grytClient.serverFor(channelMap.get());
+    if (!server?.ready) return;
+    server.sendTyping(channelMap.get("grytChannelId"));
   } catch (e) {
     log("DISCORD", "Failed to relay typing indicator:", e);
   }
@@ -169,150 +123,172 @@ discordClient.on(DiscordEvents.TypingStart, async (type) => {
 discordClient.on(DiscordEvents.MessageCreate, async (msg) => {
   if (msg.author.id === discordClient.user?.id) return;
   try {
-    await DiscordCreateMessageHandler(msg, discordClient, fluxerClient);
+    await DiscordCreateMessageHandler(msg, discordClient, grytClient);
   } catch (e) {
-    await sendErrorMessage(msg, discordClient, fluxerClient, e, true);
+    await sendErrorMessage(msg, discordClient, grytClient, e);
   }
 });
 
 discordClient.on(DiscordEvents.MessageUpdate, async (oldMsg, newMsg) => {
   try {
-    await DiscordUpdateMessageHandler(oldMsg, newMsg, fluxerClient);
+    await DiscordUpdateMessageHandler(oldMsg, newMsg, discordClient, grytClient);
   } catch (e) {
-    await sendErrorMessage(newMsg, discordClient, fluxerClient, e);
+    await sendErrorMessage(newMsg, discordClient, grytClient, e);
   }
 });
 
 discordClient.on(DiscordEvents.MessageDelete, async (msg) => {
   try {
-    await DiscordDeleteMessageHandler(msg, fluxerClient);
+    await DiscordDeleteMessageHandler(msg, grytClient);
   } catch (e) {
-    log("FLUXER", e);
+    log("GRYT", e);
   }
 });
 
 discordClient.on(DiscordEvents.MessageBulkDelete, async (msgs) => {
   try {
-    await DiscordBulkDeleteMessageHandler(msgs, fluxerClient);
+    await DiscordBulkDeleteMessageHandler(msgs, grytClient);
   } catch (e) {
-    log("FLUXER", e);
+    log("GRYT", e);
   }
 });
 
 discordClient.on(DiscordEvents.ChannelPinsUpdate, async (channel) => {
   try {
-    await DiscordPinsUpdateHandler(channel, fluxerClient);
+    await DiscordPinsUpdateHandler(channel);
   } catch (e) {
-    log("FLUXER", e);
+    log("GRYT", e);
   }
 });
 
-// prob contributed on the sudden deletions, will comment this for now
-// fluxerClient.on(FluxerEvents.GuildDelete, async (guild) => {
-//   if (guild.unavailable) return;
+// ── Gryt ──────────────────────────────────────────────────────────
 
-//   await GuildMap.destroy({
-//     where: {
-//       guildId: guild.id
-//     }
-//   })
-// })
-
-fluxerClient.on(FluxerEvents.ChannelDelete, async (chnl) => {
+grytClient.on("messageCreate", async (message) => {
   try {
-    await destroyChannelMaps({ fluxerChannelId: chnl.id });
+    await GrytCreateMessageHandler(message, grytClient, discordClient);
   } catch (e) {
-    log("DB", `ChannelDelete cleanup failed for fluxer channel ${chnl.id}`, e);
+    await sendErrorMessage(message, discordClient, grytClient, e);
   }
 });
 
-fluxerClient.on(FluxerEvents.MessageCreate, async (msg) => {
+grytClient.on("messageUpdate", async (message) => {
   try {
-    if (msg.author.id === fluxerClient.user?.id) return;
-    await FluxerCreateMessageHandler(msg, fluxerClient, discordClient);
-  } catch (e) {
-    await sendErrorMessage(msg, discordClient, fluxerClient, e, true);
-  }
-});
-fluxerClient.on(FluxerEvents.MessageUpdate, async (oldMsg, newMsg) => {
-  try {
-    await FluxerUpdateMessageHandler(oldMsg, newMsg, discordClient);
-  } catch (e) {
-    if (newMsg.partial) {
-      log("FLUXER", "An error occurred", e);
-    } else {
-      await sendErrorMessage(newMsg, discordClient, fluxerClient, e);
-    }
-  }
-});
-fluxerClient.on(FluxerEvents.MessageDelete, async (msg) => {
-  try {
-    await FluxerDeleteMessageHandler(msg, discordClient, fluxerClient);
+    await GrytUpdateMessageHandler(message, discordClient);
   } catch (e) {
     log("DISCORD", e);
   }
 });
 
-fluxerClient.on(FluxerEvents.MessageDeleteBulk, async (msgs) => {
+grytClient.on("messageDelete", async (event) => {
   try {
-    await FluxerBulkDeleteMessageHandler(msgs, discordClient);
+    await GrytDeleteMessageHandler(event, discordClient);
   } catch (e) {
     log("DISCORD", e);
   }
 });
 
-fluxerClient.on(FluxerEvents.ChannelPinsUpdate, async (chnl) => {
+grytClient.on("purgeUser", async (event) => {
   try {
-    await FluxerPinsUpdateHandler(chnl, discordClient, fluxerClient);
+    await GrytPurgeUserHandler(event, discordClient);
   } catch (e) {
     log("DISCORD", e);
   }
 });
 
-fluxerClient.on(FluxerEvents.TypingStart, async (type) => {
-  if (type.userId === fluxerClient.user?.id) return;
+grytClient.on("typingStart", async (event) => {
+  if (event.serverUserId === event.server.serverUserId) return;
 
   try {
     const channelMap = await ChannelMap.findOne({
-      where: {
-        fluxerChannelId: type.channelId,
-      },
+      where: { grytChannelId: event.channelId },
     });
-
     if (!channelMap || !(await isTypingEnabled(channelMap))) return;
 
     const channel = await discordClient.channels.fetch(
-      //@ts-expect-error
-      channelMap.discordChannelId,
+      channelMap.get("discordChannelId"),
     );
     if (channel && channel.isSendable()) await channel.sendTyping();
   } catch (e) {
-    log("FLUXER", "Failed to relay typing indicator:", e);
+    log("GRYT", "Failed to relay typing indicator:", e);
   }
 });
 
+grytClient.on("ready", () => {
+  updatePresence();
+  if (discordReady) onStartupComplete();
+});
+
+grytClient.on("channels", (server) => {
+  log("DEBUG", `${server.host}: ${server.channels.size} channels visible`);
+});
+
+// ── Startup ───────────────────────────────────────────────────────
+
 let discordReady = false;
-let fluxerReady = false;
-/** @type {null | (() => void)} */
-let startVoiceRecovery = null;
+let firstReadyDone = false;
+
+async function updatePresence() {
+  try {
+    const count = await ChannelMap.count();
+    const text = `${Config.BotPrefix}help | bridging ${count} channel${count === 1 ? "" : "s"}`;
+    discordClient.user?.setActivity(text);
+    for (const server of grytClient.servers.values()) server.setActivity(text);
+  } catch {}
+}
+
+/**
+ * Runs once Discord is up, whether or not a Gryt server has let the bot in yet:
+ * waiting at the door is the ordinary first run, and that is exactly when
+ * somebody needs to be told where to go and approve it.
+ */
+async function onStartupComplete() {
+  if (firstReadyDone) return;
+  firstReadyDone = true;
+
+  try {
+    await ensureBotEmojis(discordClient);
+  } catch (e) {
+    log("META", "Reply emoji setup failed, replies will use a plain arrow.", e);
+  }
+
+  if (Config.Motds && Config.Motds.length > 0) {
+    setInterval(() => motdLoop(), 10 * 60 * 1000);
+    motdLoop();
+  }
+
+  renderBox([
+    "Grytcord is up.",
+    "",
+    "Invite the Discord bot:",
+    discordAuthLink(Config.DiscordClientId),
+    "",
+    ...[...grytClient.servers.values()].map((server) =>
+      server.ready
+        ? `Gryt: joined ${server.name} (${server.host})`
+        : `Gryt: ${grytJoinHint(server.host)}`,
+    ),
+  ]);
+}
+
+discordClient.on(DiscordEvents.ClientReady, async () => {
+  log("DISCORD", `${discordClient.user?.tag} is ready!`);
+  discordReady = true;
+  await updatePresence();
+  onStartupComplete();
+});
 
 /** @param {unknown} error */
 function isRecoverableRuntimeError(error) {
   const message = error instanceof Error ? error.message : String(error);
-
   if (!message) return false;
 
   if (message.includes("Used disallowed intents")) {
     renderBox([
       "Message Content Intent not enabled!",
-      "On Discord Developer Portal, go to the Fluxcord bot you created,",
+      "On the Discord Developer Portal, open the bot you created,",
       'then the Bot section, then enable "Message Content Intent".',
       "",
-      "To avoid footguns because of this, Fluxcord will shut down itself.",
-      "You can start it later with `docker compose up -d`.",
-      "",
-      "Please join jb's unlabeled capacitor for support:",
-      "https://fluxer.gg/jbcrn",
+      "Grytcord will shut down rather than run half-blind.",
     ]);
     process.exit(0);
   }
@@ -328,217 +304,36 @@ function isRecoverableRuntimeError(error) {
     "Rate limited",
     "Missing Permissions",
     "Missing Access",
-    "You don't have the permissions",
+    "does not have",
     "_RateLimitError",
   ].some((needle) => message.includes(needle));
 }
-
-async function onBothReady() {
-  if (!fs.existsSync(Config.DataFolderPath + "/fluxcord.json")) {
-    log("META", "Welcome to Fluxcord! Doing first-time setup...");
-    try {
-      const replyLRes = await fetch(
-        Config.InternalAssetsPrefixUrl + "/reply-l.webp",
-        {
-          headers: {
-            "User-Agent": buildExtHttpUserAgent(),
-          },
-        },
-      );
-      const replyRRes = await fetch(
-        Config.InternalAssetsPrefixUrl + "/reply-r.webp",
-        {
-          headers: {
-            "User-Agent": buildExtHttpUserAgent(),
-          },
-        },
-      );
-      const replyL = Buffer.from(await replyLRes.arrayBuffer());
-      const replyR = Buffer.from(await replyRRes.arrayBuffer());
-
-      const fluxerGuild = await fluxerClient.guilds.fetch(
-        Config.FluxerTempEmojiGuildId,
-      );
-      try {
-        await fluxerGuild?.createEmojisBulk([
-          {
-            // @ts-ignore
-            image: replyL.toString("base64"),
-            name: "reply_l",
-          },
-          {
-            // @ts-ignore
-            image: replyR.toString("base64"),
-            name: "reply_r",
-          },
-        ]);
-      } catch {}
-
-      const fluxerEmojiReplyL = await fluxerClient.resolveEmoji(
-        ":reply_l:",
-        Config.FluxerTempEmojiGuildId,
-      );
-      const fluxerEmojiReplyR = await fluxerClient.resolveEmoji(
-        ":reply_r:",
-        Config.FluxerTempEmojiGuildId,
-      );
-
-      let discordEmojiReplyL;
-      try {
-        discordEmojiReplyL = await discordClient.application?.emojis.create({
-          attachment: replyL,
-          name: "reply_l",
-        });
-      } catch {}
-
-      let discordEmojiReplyR;
-      try {
-        discordEmojiReplyR = await discordClient.application?.emojis.create({
-          attachment: replyR,
-          name: "reply_r",
-        });
-      } catch {}
-
-      if (!discordEmojiReplyL || !discordEmojiReplyR) {
-        const existing = await discordClient.application?.emojis.fetch();
-        discordEmojiReplyL ??= existing?.find((e) => e.name === "reply_l");
-        discordEmojiReplyR ??= existing?.find((e) => e.name === "reply_r");
-      }
-
-      fs.writeFileSync(
-        Config.DataFolderPath + "/fluxcord.json",
-        JSON.stringify({
-          autoGenerated:
-            "This file is automatically generated by Fluxcord. Please do not touch it!",
-          fluxerReplyEmoji: {
-            replyL: fluxerEmojiReplyL,
-            replyR: fluxerEmojiReplyR,
-          },
-          discordReplyEmoji: {
-            replyL: discordEmojiReplyL?.id,
-            replyR: discordEmojiReplyR?.id,
-          },
-        }),
-      );
-      log("META", "First time setup done! Enjoy using the bot!");
-    } catch (e) {
-      log("META", "For jb (or Fluxcord team), error is:", e);
-      renderBox([
-        "First time setup failed!",
-        "",
-        "To avoid footguns because of this, Fluxcord will shut down itself.",
-        "You can start it later with `docker compose up -d`.",
-        "",
-        "Please join jb's unlabeled capacitor for support:",
-        "https://fluxer.gg/jbcrn",
-      ]);
-      process.exit(0);
-    }
-  } else {
-    try {
-      const r = fs.readFileSync(
-        Config.DataFolderPath + "/fluxcord.json",
-        "utf-8",
-      );
-      const t = JSON.parse(r);
-      if (
-        !t.fluxerReplyEmoji ||
-        !t.fluxerReplyEmoji.replyL ||
-        !t.fluxerReplyEmoji.replyR ||
-        !t.discordReplyEmoji ||
-        !t.discordReplyEmoji.replyL ||
-        !t.discordReplyEmoji.replyR
-      ) {
-        throw new Error(`Corrupted field on fluxcord.json, full file: ${r}`);
-      }
-    } catch (e) {
-      log("META", "For jb (or Fluxcord team), error is:", e);
-      renderBox([
-        "Corrupted fluxcord.json found!",
-        "",
-        "To avoid footguns because of this, Fluxcord will shut down itself.",
-        "You can start it later with `docker compose up -d`.",
-        "",
-        "Please join jb's unlabeled capacitor for support:",
-        "https://fluxer.gg/jbcrn",
-      ]);
-      process.exit(0);
-    }
-  }
-
-  try {
-    await ensureLoadingEmojis(discordClient, fluxerClient);
-  } catch (e) {
-    log(
-      "META",
-      "Loading emoji setup failed, early bridge placeholders will use fallback markers.",
-      e,
-    );
-  }
-
-  if (
-    Config.Motds &&
-    Config.Motds.length > 0 &&
-    // @ts-ignore
-    Config.Motds.every((x) => !!x)
-  ) {
-    setInterval(
-      () => {
-        motdLoop();
-      },
-      10 * 60 * 1000,
-    );
-    motdLoop();
-  }
-
-  renderBox([
-    "To invite Fluxcord to your server, here's the invite links:",
-    "",
-    "Discord:",
-    await genAuthLink(Config.DiscordClientId),
-    "",
-    "Fluxer:",
-    await genAuthLink(fluxerClient.user?.id, true),
-  ]);
-
-  startVoiceRecovery?.();
-}
-
-fluxerClient.on(FluxerEvents.Ready, async () => {
-  log(
-    "FLUXER",
-    `${fluxerClient.user?.username}#${fluxerClient.user?.discriminator} is ready!`,
-  );
-
-  fluxerClient.user?.setPresence({
-    status: "online",
-    customStatus: {
-      text: `${Config.BotPrefix}help | bridging ${maps.length} channel${maps.length > 1 ? "s" : ""}`,
-    },
-  });
-
-  fluxerReady = true;
-  if (discordReady) onBothReady();
-});
-
-discordClient.on(DiscordEvents.ClientReady, async () => {
-  log("DISCORD", `${discordClient.user?.tag} is ready!`);
-
-  discordClient.user?.setActivity(
-    `${Config.BotPrefix}help | bridging ${maps.length} channel${maps.length > 1 ? "s" : ""}`,
-  );
-
-  discordReady = true;
-  if (fluxerReady) onBothReady();
-});
 
 process.on("uncaughtException", (error) => {
   log("META", "A uncaught exception occurred.", error);
 
   if (isRecoverableRuntimeError(error)) {
+    log("META", "Ignoring recoverable runtime error and keeping the process alive.");
+    return;
+  }
+
+  try {
+    discordClient.destroy();
+  } catch {}
+  try {
+    grytClient.destroy().catch(() => {});
+  } catch {}
+
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  log("META", "A unhandled rejection occurred.", reason);
+
+  if (isRecoverableRuntimeError(reason)) {
     log(
       "META",
-      "Ignoring recoverable runtime error and keeping the process alive.",
+      "Ignoring recoverable runtime rejection and keeping the process alive.",
     );
     return;
   }
@@ -546,136 +341,28 @@ process.on("uncaughtException", (error) => {
   try {
     discordClient.destroy();
   } catch {}
-
   try {
-    fluxerClient.destroy();
+    grytClient.destroy().catch(() => {});
   } catch {}
 
   process.exit(1);
 });
 
-// @ts-ignore
-process.on(
-  "unhandledRejection",
-  /** @param {unknown} reason */
-  (reason, promise) => {
-    log("META", "A unhandled rejection occurred.", reason);
-
-    if (isRecoverableRuntimeError(reason)) {
-      log(
-        "META",
-        "Ignoring recoverable runtime rejection and keeping the process alive.",
-      );
-      return;
-    }
-
-    try {
-      discordClient.destroy();
-    } catch {}
-
-    try {
-      fluxerClient.destroy();
-    } catch {}
-
-    process.exit(1);
-  },
-);
-
-/** @type {string[]} */
-const discordVoiceTokens = Array.isArray(Config.DiscordVoiceTokens)
-  ? Config.DiscordVoiceTokens.filter(Boolean)
-  : [];
-/** @type {import("discord.js").Client[]} */
-export const discordVoiceClients = [];
-for (const [i, token] of discordVoiceTokens.entries()) {
-  const voiceClient = new DiscordClient({
-    rest: { timeout: 30_000 },
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
-  });
-  voiceClient.on(DiscordEvents.ClientReady, () => {
-    log(
-      "DISCORD",
-      `Voice client ${i + 1}/${discordVoiceTokens.length} ready as ${voiceClient.user?.tag}`,
-    );
-  });
-  voiceClient.login(token).catch((e) => {
-    log("DISCORD", `Voice client ${i + 1} failed to login`, e);
-  });
-  discordVoiceClients.push(voiceClient);
-}
-
-if (Config.VoiceBridgingEnabled) {
-  const voiceHandler = await import("./utils/VoiceHandler.js");
-  const { setupVoiceHandling } = voiceHandler;
-  startVoiceRecovery = voiceHandler.startVoiceRecovery;
-  await setupVoiceHandling(discordClient, fluxerClient, discordVoiceClients);
-}
-
-setupReactionHandling(discordClient, fluxerClient);
-
-setupHealthcheck(discordClient, fluxerClient);
-
-discordClient.login(Config.DiscordBotToken);
-fluxerClient.login(Config.FluxerBotToken);
-
-function checkIfFluxerConnected() {
-  if (!fluxerClient.isReady()) {
-    log("META", "Fluxer didn't connect after 10 seconds, restarting...");
-    process.exit(1);
-  }
-}
-
 function motdLoop() {
-  /**
-   * @type {{ text: string, emoji?: string | { fluxer: { name: string, id: string }, discord: string } }[]}
-   */
+  /** @type {{ text: string, emoji?: string }[]} */
   const motds = Config.Motds;
   const motd = motds[Math.floor(Math.random() * motds.length)];
+  if (!motd) return;
 
-  //@ts-ignore
-  if (motd) updateBotStatus(motd);
+  const text = `${motd.emoji ? `${motd.emoji} ` : ""}${Config.BotPrefix}help | ${motd.text}`;
+  discordClient.user?.setActivity(text);
+  for (const server of grytClient.servers.values()) server.setActivity(text);
 }
 
-/**
- * @param {{ text: string, emoji: string | { fluxer: { name: string, id: string }, discord: string } | undefined }} status
- */
-function updateBotStatus(status) {
-  let emoji = undefined;
+setupReactionHandling(discordClient, grytClient);
+setupHealthcheck(discordClient, grytClient);
 
-  if (status.emoji)
-    if (status.emoji instanceof Object) {
-      emoji = {
-        discord: status.emoji.discord,
-        fluxer: {
-          emoji_id: status.emoji.fluxer.id,
-          emoji_name: status.emoji.fluxer.name,
-        },
-      };
-    } else {
-      emoji = {
-        discord: status.emoji,
-        fluxer: {
-          emoji_name: status.emoji,
-        },
-      };
-    }
+discordClient.login(Config.DiscordBotToken);
+await grytClient.login();
 
-  fluxerClient.user?.setPresence({
-    status: "online",
-    customStatus: {
-      text: `${Config.BotPrefix}help | ${status.text}`,
-      ...(emoji
-        ? {
-            emojiName: emoji.fluxer.emoji_name,
-            emojiId: emoji.fluxer.emoji_id,
-          }
-        : {}),
-    },
-  });
-
-  discordClient.user?.setActivity(
-    `${emoji?.discord ? `${emoji.discord} ` : ""}${Config.BotPrefix}help | ${status.text}`,
-  );
-}
-
-setInterval(() => checkIfFluxerConnected(), 10000);
+export { discordClient, grytClient };

@@ -3,10 +3,8 @@ import {
   Message as DiscordMessage,
   Client as DiscordClient,
 } from "discord.js";
-import {
-  Message as FluxerMessage,
-  Client as FluxerClient,
-} from "@fluxerjs/core";
+import type { GrytMessage } from "./GrytMessage.js";
+import type { GrytClient } from "./GrytClient.js";
 
 export type CommandSchema = {
   groupNames?: string[];
@@ -20,8 +18,8 @@ export type CommandSchema = {
   additionalInfo?: string;
   run: (
     params: string[],
-    message: OmitPartialGroupDMChannel<DiscordMessage<boolean>> | FluxerMessage,
+    message: OmitPartialGroupDMChannel<DiscordMessage<boolean>> | GrytMessage,
     discordClient: DiscordClient,
-    fluxerClient: FluxerClient,
+    grytClient: GrytClient,
   ) => Promise<void>;
 };

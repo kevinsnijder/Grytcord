@@ -1,153 +1,134 @@
-import { Client as FluxerClient } from "@fluxerjs/core";
-import {
-  ButtonStyle,
-  ComponentType,
-  Message,
-  MessageMentions,
-} from "discord.js";
+import { ButtonStyle, ComponentType, MessageMentions } from "discord.js";
 import { ChannelMap } from "../db/index.js";
 import { Op } from "sequelize";
 
 /**
- * @param {import("discord.js").Message | import("@fluxerjs/core").Message} message
- * @param {string?} content
- * @param {(import("discord.js").Guild | import("@fluxerjs/core").Guild)?} otherSideGuild
+ * Gryt mentions are the member's nickname after an `@`, which the server
+ * matches against the member list. The markdown link form is what a webhook
+ * message needs — plain text in one of those notifies nobody — and it still
+ * reads as a mention in an ordinary message, so everything uses it.
+ *
+ * @param {string} nickname
+ * @param {string} serverUserId
  */
-export async function parseMentions(message, content, otherSideGuild) {
-  let res = content || message.content;
+export function grytMention(nickname, serverUserId) {
+  return `[@${nickname}](mention:${serverUserId})`;
+}
 
+/**
+ * Find the Gryt member a Discord user most likely is: same display name, or
+ * same username. Nothing links the two accounts, so a name is all there is.
+ *
+ * @param {import("./GrytClient.js").GrytServerConnection} server
+ * @param {{ displayName?: string, globalName?: string | null, username: string }} user
+ */
+export function findGrytMemberForUser(server, user) {
+  const candidates = [user.displayName, user.globalName, user.username]
+    .filter(Boolean)
+    .map((x) => String(x).toLowerCase());
+
+  for (const member of server.members.values()) {
+    if (candidates.includes(String(member.nickname ?? "").toLowerCase())) {
+      return member;
+    }
+  }
+  return null;
+}
+
+/**
+ * A Discord message's mentions, rewritten for Gryt.
+ *
+ * @param {import("discord.js").Message} message
+ * @param {string | null} content
+ * @param {import("./GrytClient.js").GrytServerConnection | null} server
+ */
+export async function parseDiscordMentions(message, content, server) {
+  let res = content ?? message.content ?? "";
+  if (!res) return "";
+  if (!(message.mentions instanceof MessageMentions)) return res;
+
+  const bridgedChannels = await ChannelMap.findAll({
+    where: {
+      discordChannelId: {
+        [Op.in]: message.mentions.channels.map((x) => x.id),
+      },
+    },
+  });
+
+  message.mentions.channels.forEach((channel) => {
+    if (channel.isDMBased?.()) return;
+    const bridged = bridgedChannels.find(
+      (x) => channel.id === x.get("discordChannelId"),
+    );
+    const grytChannel = bridged
+      ? server?.channels.get(bridged.get("grytChannelId"))
+      : null;
+    res = res.replaceAll(
+      `<#${channel.id}>`,
+      `#${grytChannel?.name ?? channel.name}`,
+    );
+  });
+
+  message.mentions.users.forEach((user) => {
+    const member = server ? findGrytMemberForUser(server, user) : null;
+    const rendered = member
+      ? grytMention(member.nickname, member.serverUserId)
+      : `@${user.displayName ?? user.username}`;
+    res = res.replaceAll(`<@${user.id}>`, rendered);
+    res = res.replaceAll(`<@!${user.id}>`, rendered);
+  });
+
+  message.mentions.roles.forEach((role) => {
+    res = res.replaceAll(`<@&${role.id}>`, `@${role.name}`);
+  });
+
+  // Anything still in snowflake form points at somebody nobody here can see.
+  res = res.replace(/<@&\d+>/g, "@unknown-role");
+  res = res.replace(/<@!?\d+>/g, "@unknown-user");
+
+  return res;
+}
+
+/**
+ * A Gryt message's channel references, rewritten for Discord. Member mentions
+ * are handled by MentionResolver, which needs the Discord guild.
+ *
+ * @param {string} content
+ * @param {import("./GrytClient.js").GrytServerConnection} server
+ */
+export async function parseGrytMentions(content, server) {
+  let res = content ?? "";
   if (!res) return "";
 
-  if (message.mentions instanceof MessageMentions) {
-    const bridgedChannels = await ChannelMap.findAll({
-      where: {
-        discordChannelId: {
-          [Op.in]: message.mentions.channels.map((x) => x.id),
-        },
+  // `[@Name](mention:id)` is how Gryt writes a mention. Flatten it to `@Name`
+  // so MentionResolver can try to find that person on the Discord side.
+  res = res.replace(/\[@([^\]]+)\]\(mention:[^)]+\)/g, "@$1");
+
+  const bridged = await ChannelMap.findAll({
+    where: {
+      grytChannelId: {
+        [Op.in]: [...server.channels.keys()],
       },
-    });
+    },
+  });
 
-    message.mentions.channels.forEach((v) => {
-      const bridgedChannel = bridgedChannels.find(
-        (x) => v.id === x.discordChannelId,
-      );
-      if (!v.isDMBased())
-        res = res.replaceAll(
-          `<#${v.id}>`,
-          bridgedChannel
-            ? `<#${bridgedChannel.fluxerChannelId}>`
-            : `#${v.name}`,
-        );
-    });
-
-    message.mentions.users.forEach((v) => {
-      res = res.replaceAll(`<@${v.id}>`, `@${v.tag}`);
-    });
-
-    const whitelist = [];
-
-    /** @type {import("@fluxerjs/core").Role[]} */
-    const roles = await otherSideGuild.fetchRoles();
-    message.mentions.roles.forEach((v) => {
-      res = res.replaceAll(
-        `<@&${v.id}>`,
-        (() => {
-          if (!roles) return `@${v.name}`;
-          const extRole = roles.find((x) => x.name === v.name);
-          if (!extRole || !extRole.mentionable) return `@${v.name}`;
-          whitelist.push(extRole.id);
-          return `<@&${extRole.id}>`;
-        })(),
-      );
-    });
-
-    res = res.replace(/<@&(\d+)>/g, (match, id) => {
-      return whitelist.includes(id) ? match : "@unknown-role";
-    });
-  } else if (message.client instanceof FluxerClient) {
-    res = await parseRolesAndChannels(
-      res,
-      message.guildId ?? "",
-      message.client,
-      otherSideGuild,
-    );
-
-    message.mentions.forEach((v) => {
-      res = res.replaceAll(`<@${v.id}>`, `@${v.username}#${v.discriminator}`);
-    });
+  for (const channel of server.channels.values()) {
+    const map = bridged.find((x) => x.get("grytChannelId") === channel.id);
+    if (!map) continue;
+    // Gryt has no channel-link syntax of its own, so this only catches a
+    // channel named in a way Discord can link back to.
+    res = res.replaceAll(`#${channel.name}`, `<#${map.get("discordChannelId")}>`);
   }
 
   return res;
 }
 
 /**
- * @param {string} content
- * @param {string} guildId
- * @param {FluxerClient} fluxerClient
- * @param {import("discord.js").Guild?} otherSideGuild
- */
-async function parseRolesAndChannels(
-  content,
-  guildId,
-  fluxerClient,
-  otherSideGuild,
-) {
-  let guild;
-  try {
-    guild = await fluxerClient.guilds.fetch(guildId);
-  } catch {
-    return content;
-  }
-
-  let res = content;
-
-  if (guild) {
-    const roles = await guild.fetchRoles();
-    const channels = await guild.fetchChannels();
-    const otherRoles = await otherSideGuild.roles.fetch();
-    const whitelist = [];
-
-    roles.forEach((v) => {
-      res = res.replaceAll(
-        `<@&${v.id}>`,
-        (() => {
-          if (!otherRoles) return `@${v.name}`;
-          const extRole = otherRoles.find((x) => x.name === v.name);
-          if (!extRole || !extRole.mentionable) return `@${v.name}`;
-          whitelist.push(extRole.id);
-          return `<@&${extRole.id}>`;
-        })(),
-      );
-    });
-
-    res = res.replace(/<@&(\d+)>/g, (match, id) => {
-      return whitelist.includes(id) ? match : "@unknown-role";
-    });
-
-    const bridgedChannels = await ChannelMap.findAll({
-      where: {
-        fluxerChannelId: {
-          [Op.in]: channels.map((x) => x.id),
-        },
-      },
-    });
-
-    channels.forEach((v) => {
-      const bridgedChannel = bridgedChannels.find(
-        (x) => v.id === x.fluxerChannelId,
-      );
-      res = res.replaceAll(
-        `<#${v.id}>`,
-        bridgedChannel ? `<#${bridgedChannel.discordChannelId}>` : `#${v.name}`,
-      );
-    });
-  }
-
-  return res;
-}
-
-/**
- * @param {import("discord.js").Message | import("@fluxerjs/core").Message} message
+ * Whether a Discord message is itself a bridged or proxied message, and what it
+ * was replying to. Lets Grytcord chain a reply back to the right message when
+ * another bridge (or PluralKit, or Tupperbox) is in the room.
+ *
+ * @param {import("discord.js").Message} message
  */
 export async function attemptParseBridgedMessage(message) {
   const defaultResponse = {
@@ -163,7 +144,7 @@ export async function attemptParseBridgedMessage(message) {
 
   const contentParsers = [
     {
-      type: "fluxcord",
+      type: "grytcord",
       isBridge: true,
       isProxy: false,
       regex:
@@ -234,8 +215,7 @@ export async function attemptParseBridgedMessage(message) {
     }
   }
 
-  const boltReplyRegex =
-    /https:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)/;
+  const boltReplyRegex = /https:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)/;
 
   if (Array.isArray(message.components)) {
     for (const row of message.components) {

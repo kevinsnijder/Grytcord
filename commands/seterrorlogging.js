@@ -1,67 +1,70 @@
-import { Channel as FluxerChannel } from "@fluxerjs/core";
 import Config from "../utils/ConfigHandler.js";
 import { GuildMap } from "../db/index.js";
+import { isGryt, replyTo } from "../utils/Compat.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
  */
 const command = {
-  groupNames: ["guild", "g", "server", "s", "community", "c"],
+  groupNames: ["guild", "g", "server", "s"],
   name: "seterrorlogging",
   aliases: ["errlog", "err"],
   description: "Set error logging channel",
   requireElevated: true,
   params: "<channelId>",
   additionalInfo:
-    "Can take either a Discord channel or a Fluxer channel depends on where you ran it (if you run it on Discord, it needs a Discord channel ID)",
-  async run(params, message, _, _2) {
+    "Takes a channel on the side you run it from (run it on Discord, give it a Discord channel ID).",
+  async run(params, message, discordClient, grytClient) {
     if (!params[0]) {
-      await message.reply(
+      await replyTo(
+        message,
         `Missing parameters. Usage: \`${Config.BotPrefix}guild seterrorlogging <channelId>\``,
       );
       return;
     }
 
     const guildMap = await GuildMap.findOne({
-      where: {
-        guildId: message.guildId,
-      },
+      where: { guildId: message.guildId },
     });
 
     if (!guildMap) {
-      await message.reply("This channel needs to be bridged first.");
+      await replyTo(message, "This channel needs to be bridged first.");
       return;
     }
 
     const channelId = params[0];
 
-    let channel;
-    try {
-      channel = await message.client.channels.fetch(channelId);
-    } catch {
-      channel = null;
-    }
-    if (channel instanceof FluxerChannel) {
-      if (!channel.canSendMessage()) {
-        await message.reply("The bot cannot send messages on this channel.");
+    if (isGryt(message)) {
+      const resolved = grytClient.resolveChannel(channelId);
+      if (!resolved || resolved.server.host !== message.host) {
+        await replyTo(message, "The bot cannot find this channel.");
         return;
       }
-      guildMap.errorLoggingChannelId = channel.id;
-      guildMap.errorLoggingPlatform = "fluxer";
-    } else if (channel) {
-      if (!channel.isSendable()) {
-        await message.reply("The bot cannot send messages on this channel.");
-        return;
-      }
-      guildMap.errorLoggingChannelId = channel.id;
-      guildMap.errorLoggingPlatform = "discord";
+      guildMap.set("errorLoggingChannelId", channelId);
+      guildMap.set("errorLoggingPlatform", "gryt");
     } else {
-      await message.reply("The bot cannot find this channel.");
-      return;
+      let channel;
+      try {
+        channel = await discordClient.channels.fetch(channelId);
+      } catch {
+        channel = null;
+      }
+
+      if (!channel) {
+        await replyTo(message, "The bot cannot find this channel.");
+        return;
+      }
+      if (!channel.isSendable()) {
+        await replyTo(message, "The bot cannot send messages on this channel.");
+        return;
+      }
+
+      guildMap.set("errorLoggingChannelId", channel.id);
+      guildMap.set("errorLoggingPlatform", "discord");
     }
 
     await guildMap.save();
-    await message.reply("Done!");
+    await replyTo(message, "Done!");
   },
 };
 

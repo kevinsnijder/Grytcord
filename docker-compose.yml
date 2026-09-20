@@ -4,14 +4,15 @@ services:
       context: .
       dockerfile: "./Dockerfile"
       tags:
-        - "fluxcord:latest"
+        - "grytcord:latest"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # The Gryt identity key lives here. THE FILE IS THE BOT: lose this volume
+      # and the server sees a stranger knocking, holding none of the bot's
+      # permissions, name or history.
       - "./data:/data"
       - "./config.js:/app/config.js"
     restart: on-failure
     # ports:
-    #   - "8765:8765"
     #   - "8080:8080" # healthcheck endpoint (/health), uncomment to scrape from host
     expose:
       - "8080"
@@ -28,9 +29,9 @@ services:
       start_period: 60s
       retries: 3
     networks:
-      - fluxcord-net
+      - grytcord-net
 
 networks:
-  fluxcord-net:
+  grytcord-net:
     driver: bridge
-    name: fluxcord-net
+    name: grytcord-net

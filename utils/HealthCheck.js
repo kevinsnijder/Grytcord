@@ -5,10 +5,10 @@ import { log } from "./Logger.js";
 
 /**
  * @param {import("discord.js").Client} discordClient
- * @param {import("@fluxerjs/core").Client} fluxerClient
+ * @param {import("./GrytClient.js").GrytClient} grytClient
  * @returns {import("node:http").Server | null}
  */
-export function setupHealthcheck(discordClient, fluxerClient) {
+export function setupHealthcheck(discordClient, grytClient) {
   if (Config.HealthcheckEnabled === false) return null;
 
   const port = Config.HealthcheckPort ?? 8080;
@@ -27,16 +27,20 @@ export function setupHealthcheck(discordClient, fluxerClient) {
     }
 
     const discordOnline = isDiscordOnline(discordClient);
-    const fluxerOnline = isFluxerOnline(fluxerClient);
+    const grytServers = [...grytClient.servers.values()].map((x) => ({
+      host: x.host,
+      status: x.ready ? "online" : "offline",
+    }));
+    const grytOnline = grytClient.isReady();
 
-    const healthy = url === "/live" ? true : discordOnline && fluxerOnline;
+    const healthy = url === "/live" ? true : discordOnline && grytOnline;
 
     res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
         status: healthy ? "ok" : "degraded",
         discord: discordOnline ? "online" : "offline",
-        fluxer: fluxerOnline ? "online" : "offline",
+        gryt: grytServers,
         uptime: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
       }),
@@ -60,16 +64,6 @@ function isDiscordOnline(client) {
     if (typeof client.isReady === "function" && !client.isReady()) return false;
     const wsStatus = client.ws?.status;
     if (typeof wsStatus === "number" && wsStatus !== 0) return false;
-    return !!client.user;
-  } catch {
-    return false;
-  }
-}
-
-/** @param {import("@fluxerjs/core").Client} client */
-function isFluxerOnline(client) {
-  try {
-    if (typeof client.isReady === "function") return !!client.isReady();
     return !!client.user;
   } catch {
     return false;

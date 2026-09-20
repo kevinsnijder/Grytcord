@@ -5,11 +5,9 @@ on:
 
 jobs:
   check:
-    runs-on: rotfront-node
+    runs-on: docker
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: https://github.com/pnpm/action-setup@v6
         with:
           version: 10

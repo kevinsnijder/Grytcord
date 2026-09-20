@@ -1,92 +1,81 @@
-import { EmbedBuilder, Message } from "@fluxerjs/core";
-import { EmbedBuilder as DiscordEmbedBuilder } from "discord.js";
 import { GuildMap } from "../db/index.js";
 import { log } from "./Logger.js";
 import { genMsgLink } from "./GenMsgLink.js";
-import {
-  isBridgeHealthDegraded,
-  recordBridgeFailure,
-} from "./BridgeHealth.js";
+import { isGryt, sendTo } from "./Compat.js";
+import { isBridgeHealthDegraded, recordBridgeFailure } from "./BridgeHealth.js";
 
 /**
- * @param {import("discord.js").OmitPartialGroupDMChannel<import("discord.js").Message<boolean>> | Message} message
+ * A message that did not make it across says so where it was written, with a
+ * reaction, and in the server's error channel when one is set.
+ *
+ * The reaction stops once a bridge has failed enough times in a row: a bridge
+ * that is down should not also spend its life reacting to every message.
+ *
+ * @param {any} message
  * @param {import("discord.js").Client} discordClient
- * @param {import("@fluxerjs/core").Client} fluxerClient
+ * @param {import("./GrytClient.js").GrytClient} grytClient
  * @param {any} error
- * @param {boolean} [replyFallback=false]
  */
 export async function sendErrorMessage(
   message,
   discordClient,
-  fluxerClient,
+  grytClient,
   error,
-  replyFallback = false,
 ) {
-  recordBridgeFailure(message.guildId);
-  const suppressReaction = isBridgeHealthDegraded(message.guildId);
+  const guildId = message?.guildId ?? "";
+  recordBridgeFailure(guildId);
+  const suppressReaction = isBridgeHealthDegraded(guildId);
 
-  const guildMap = await GuildMap.findOne({
-    where: {
-      guildId: message.guildId,
-    },
-  });
+  const guildMap = await GuildMap.findOne({ where: { guildId } });
 
   try {
-    if (guildMap) {
-      if (guildMap.errorLoggingChannelId && guildMap.errorLoggingPlatform) {
-        if (guildMap.errorLoggingPlatform === "fluxer") {
-          const channel = await fluxerClient.channels.fetch(
-            guildMap.errorLoggingChannelId,
-          );
+    const channelId = guildMap?.get("errorLoggingChannelId");
+    const platform = guildMap?.get("errorLoggingPlatform");
 
-          /** @type {any} */ (channel).send({
-            embeds: [
-              new EmbedBuilder()
-                .setTitle("Error occurred while bridging a message")
-                .addFields({
-                  name: "Message",
-                  value: `${message.author.globalName} (${await genMsgLink(message)}): ${message.content}`,
-                })
-                .addFields({
-                  name: "Stack trace",
-                  value: `${error}`,
-                }),
-            ],
-          });
-        } else {
-          const channel = await discordClient.channels.fetch(
-            guildMap.errorLoggingChannelId,
-          );
+    if (channelId && platform) {
+      const card = {
+        title: "Error occurred while bridging a message",
+        color: 0xef4444,
+        fields: [
+          {
+            name: "Message",
+            value: `${message?.author?.displayName ?? message?.author?.username ?? "?"} (${await genMsgLink(
+              message,
+            ).catch(() => "?")}): ${message?.content ?? ""}`.slice(0, 1024),
+            inline: false,
+          },
+          {
+            name: "Stack trace",
+            value: `${error}`.slice(0, 1024),
+            inline: false,
+          },
+        ],
+      };
 
-          if (channel?.isSendable()) {
-            channel.send({
-              embeds: [
-                new DiscordEmbedBuilder()
-                  .setTitle("Error occurred while bridging a message")
-                  .addFields({
-                    name: "Message",
-                    value: `${message.author.globalName} (${await genMsgLink(message)}): ${message.content}`,
-                  })
-                  .addFields({
-                    name: "Stack trace",
-                    value: `${error}`,
-                  }),
-              ],
-            });
-          }
+      if (platform === "gryt") {
+        const resolved = grytClient.resolveChannel(channelId);
+        if (resolved) {
+          await sendTo(
+            { platform: "gryt", server: resolved.server, channelId },
+            { embeds: [card] },
+          );
         }
+      } else {
+        const channel = await discordClient.channels.fetch(channelId);
+        await sendTo({ platform: "discord", channel }, { embeds: [card] });
       }
-
-      if (guildMap.errorReaction && !suppressReaction) {
-        await message.react(guildMap.errorReaction);
-      }
-    } else if (!suppressReaction) {
-      await message.react("⛓️‍💥");
     }
-  } catch {}
+
+    if (!suppressReaction) {
+      const reaction = guildMap?.get("errorReaction") ?? "⛓️‍💥";
+      if (reaction) await message.react(reaction);
+    }
+  } catch {
+    // Reporting the failure must never become a second failure.
+  }
 
   log(
-    message instanceof Message ? "FLUXER" : "DISCORD",
+    isGryt(message) ? "GRYT" : "DISCORD",
     `An error occurred on ${await genMsgLink(message).catch(() => "?")}`,
     error,
   );

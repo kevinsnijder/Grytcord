@@ -1,76 +1,61 @@
-import { ChannelMap } from "../db/index.js";
-import { Message as FluxerMessage } from "@fluxerjs/core";
 import { Op } from "sequelize";
-import { AttachmentBuilder } from "discord.js";
+import { ChannelMap } from "../db/index.js";
+import { replyTo } from "../utils/Compat.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
  */
 const command = {
   name: "bridgelist",
-  description: "List of bridged channels on this server/community",
+  description: "List of bridged channels on this server",
   requireElevated: true,
-  async run(params, message, discordClient, fluxerClient) {
-    const allBridgedChannels = await ChannelMap.findAll({
+  async run(params, message, discordClient, grytClient) {
+    const bridges = await ChannelMap.findAll({
       where: {
         [Op.or]: {
           discordGuildId: message.guildId,
-          fluxerGuildId: message.guildId,
+          grytGuildId: message.guildId,
         },
       },
     });
 
-    const mappedChannels = await Promise.all(
-      allBridgedChannels.map(async (x) => {
-        const data = x.dataValues;
+    if (bridges.length === 0) {
+      await replyTo(message, "No channels are bridged here yet.");
+      return;
+    }
 
-        const [discordGuild, discordChannel, fluxerChannel, fluxerGuild] =
-          await Promise.allSettled([
-            discordClient.guilds.fetch(data.discordGuildId),
-            discordClient.channels.fetch(data.discordChannelId),
-            fluxerClient.channels.fetch(data.fluxerChannelId),
-            fluxerClient.guilds.fetch(data.fluxerGuildId),
-          ]);
+    const arrow = (type) =>
+      type === "both" ? "<->" : type === "gryt2discord" ? "-->" : "<--";
 
-        return {
-          ...data,
-          discordGuild:
-            discordGuild.status === "fulfilled"
-              ? discordGuild.value
-              : undefined,
-          discordChannel:
-            discordChannel.status === "fulfilled"
-              ? discordChannel.value
-              : undefined,
-          fluxerChannel:
-            fluxerChannel.status === "fulfilled" ? fluxerChannel.value : null,
-          fluxerGuild:
-            fluxerGuild.status === "fulfilled" ? fluxerGuild.value : null,
-        };
+    const lines = await Promise.all(
+      bridges.map(async (row) => {
+        const data = row.get();
+
+        const server = grytClient.serverFor(data);
+        const grytChannel = server?.channels.get(data.grytChannelId);
+
+        let discordGuildName = "unknown";
+        let discordChannelName = "unknown";
+        try {
+          const guild = await discordClient.guilds.fetch(data.discordGuildId);
+          discordGuildName = guild.name;
+          const channel = await discordClient.channels.fetch(
+            data.discordChannelId,
+          );
+          discordChannelName = channel?.name ?? "unknown";
+        } catch {}
+
+        return (
+          `${grytChannel?.name ?? "unknown"} (${data.grytChannelId}) on ${server?.name ?? data.grytHost} ` +
+          `${arrow(data.bridgeType)} ` +
+          `${discordChannelName} (${data.discordChannelId}) on ${discordGuildName} (${data.discordGuildId})`
+        );
       }),
     );
 
-    const bridgeArrow = (type) =>
-      type === "both" ? "<->" : type === "fluxer2discord" ? "-->" : "<--";
-
-    const str = mappedChannels
-      .map(
-        (x) =>
-          `${x.fluxerChannel?.name ?? "unknown"} (${x.fluxerChannelId}) on ${x.fluxerGuild?.name ?? "unknown"} (${x.fluxerGuildId}) ` +
-          `${bridgeArrow(x.bridgeType)} ` +
-          `${x.discordChannel?.name ?? "unknown"} (${x.discordChannelId}) on ${x.discordGuild?.name ?? "unknown"} (${x.discordGuildId})`,
-      )
-      .join("\n");
-
-    const strBuf = Buffer.from(str);
-
-    if (message instanceof FluxerMessage) {
-      await message.reply({ files: [{ name: "channels.txt", data: strBuf }] });
-    } else {
-      await message.reply({
-        files: [new AttachmentBuilder(strBuf).setName("channels.txt")],
-      });
-    }
+    await replyTo(message, {
+      files: [{ name: "channels.txt", data: Buffer.from(lines.join("\n")) }],
+    });
   },
 };
 

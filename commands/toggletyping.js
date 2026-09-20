@@ -1,5 +1,5 @@
-import { Message as FluxerMessage } from "@fluxerjs/core";
 import { GuildMap } from "../db/index.js";
+import { isGryt, replyTo } from "../utils/Compat.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -12,18 +12,13 @@ const command = {
   params: "[on|off]",
   async run(params, message) {
     if (!message.guildId) {
-      await message.reply("This command can only be used in a server.");
+      await replyTo(message, "This command can only be used in a server.");
       return;
     }
 
-    const isFluxer = message instanceof FluxerMessage;
     const [guildMap] = await GuildMap.findOrCreate({
-      where: {
-        guildId: message.guildId,
-      },
-      defaults: {
-        guildType: isFluxer ? "fluxer" : "discord",
-      },
+      where: { guildId: message.guildId },
+      defaults: { guildType: isGryt(message) ? "gryt" : "discord" },
     });
 
     const arg = params[0]?.toLowerCase();
@@ -35,14 +30,15 @@ const command = {
     } else if (arg === "off") {
       enabled = false;
     } else if (arg) {
-      await message.reply("Usage: `on` or `off`.");
+      await replyTo(message, "Usage: `on` or `off`.");
       return;
     } else {
       enabled = !current;
     }
 
     if (enabled === current) {
-      await message.reply(
+      await replyTo(
+        message,
         `Typing indicator relaying is already ${enabled ? "enabled" : "disabled"}.`,
       );
       return;
@@ -51,7 +47,8 @@ const command = {
     guildMap.set("typingEnabled", enabled);
     await guildMap.save();
 
-    await message.reply(
+    await replyTo(
+      message,
       `Typing indicator relaying ${enabled ? "enabled" : "disabled"}.`,
     );
   },

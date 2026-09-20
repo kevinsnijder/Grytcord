@@ -1,98 +1,64 @@
-import {
-  Message as FluxerMessage,
-  PermissionsBitField as FluxerPermissionsBitField,
-} from "@fluxerjs/core";
-import {
-  PermissionsBitField as DiscordPermissionsBitField,
-  AttachmentBuilder,
-  ChannelType,
-} from "discord.js";
-import { cloudUploadAttachments } from "../utils/CloudUpload.js";
+import { ChannelType, PermissionsBitField } from "discord.js";
+import { checkGrytPermissions } from "../utils/CheckBotPerms.js";
+import { isGryt, replyTo } from "../utils/Compat.js";
 
 /**
- * @type {import('../utils/CommandSchema.js').CommandSchema}
+ * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
  */
 const command = {
   name: "probe",
   description: "Probe all channels",
   requireElevated: true,
-  requireOwner: false,
-  async run(params, message, discordClient, fluxerClient) {
-    let isFluxer = message instanceof FluxerMessage;
-
+  async run(params, message, discordClient, grytClient) {
     if (!message.guildId) {
-      await message.reply("This command can only be used in a server.");
+      await replyTo(message, "This command can only be used in a server.");
       return;
     }
-    /**
-     * @type {import("discord.js").Collection<string, import("discord.js").GuildBasedChannel> | import("@fluxerjs/core").GuildChannel[]}
-     */
-    let channels;
 
-    let processedChannels = [];
+    const lines = [];
 
-    if (isFluxer) {
-      const fluxerGuild = await fluxerClient.guilds.fetch(message.guildId);
-      const fluxerUser = await fluxerGuild.members.fetchMe();
-      channels = await fluxerGuild.fetchChannels();
+    if (isGryt(message)) {
+      const server = message.server;
+      const perms = checkGrytPermissions(server);
 
-      for (const channel of channels) {
-        if (
-          channel.type !== ChannelType.GuildText &&
-          channel.type !== ChannelType.GuildVoice
-        )
-          continue;
-        const perms = fluxerUser.permissionsIn(channel);
+      lines.push(`Server: ${server.name} (${server.host})`);
+      lines.push(`Role: ${server.info?.role || "member"}`);
+      lines.push(`Permissions: ${server.permissions.join(", ") || "none"}`);
+      if (perms.missingCritical.length > 0) {
+        lines.push(`Missing (critical): ${perms.missingCritical.join(", ")}`);
+      }
+      if (perms.missingOptional.length > 0) {
+        lines.push(`Missing (optional): ${perms.missingOptional.join(", ")}`);
+      }
+      lines.push("");
+      lines.push("Channels:");
 
-        processedChannels.push({
-          name: channel.name,
-          id: channel.id,
-          perms: new FluxerPermissionsBitField(perms).toArray(),
-        });
+      // Gryt permissions are per-server rather than per-channel for a bot, so
+      // a channel here is either visible or it is not.
+      for (const channel of server.channels.values()) {
+        lines.push(`#${channel.name} (${channel.id}) [${channel.type}]`);
       }
     } else {
-      const discordGuild = await discordClient.guilds.fetch(message.guildId);
-      const discordUser = await discordGuild.members.fetchMe();
-      channels = discordGuild.channels.cache;
+      const guild = await discordClient.guilds.fetch(message.guildId);
+      const me = await guild.members.fetchMe();
+      const channels = await guild.channels.fetch();
 
-      for (const channel of channels) {
+      for (const channel of channels.values()) {
         if (
-          channel[1].type !== ChannelType.GuildText &&
-          channel[1].type !== ChannelType.GuildVoice
+          channel?.type !== ChannelType.GuildText &&
+          channel?.type !== ChannelType.GuildVoice
         )
           continue;
-        const perms = discordUser.permissionsIn(channel[1]);
-        processedChannels.push({
-          name: channel[1].name,
-          id: channel[1].id,
-          perms: new DiscordPermissionsBitField(perms).toArray(),
-        });
+        const perms = me.permissionsIn(channel);
+        lines.push(
+          `#${channel.name} (${channel.id}): ${new PermissionsBitField(perms).toArray().join(", ")}`,
+        );
       }
     }
 
-    const str = processedChannels
-      .map((x) => `#${x.name} (${x.id}): ${x.perms.join(", ")}`)
-      .join("\n");
-
-    const strBuf = Buffer.from(str, "utf-8");
-
-    if (message instanceof FluxerMessage) {
-      await message.reply({ files: [{ name: "probed.txt", data: strBuf }] });
-    } else {
-      const cloudUploaded = await cloudUploadAttachments(
-        discordClient,
-        message.channel.id,
-        [
-          {
-            attachment: strBuf,
-            name: "probed.txt",
-          },
-        ],
-      );
-      await message.reply({
-        attachments: cloudUploaded,
-      });
-    }
+    await replyTo(message, {
+      files: [{ name: "probed.txt", data: Buffer.from(lines.join("\n")) }],
+    });
   },
 };
 

@@ -17,7 +17,7 @@ if (!Config.DatabaseEncryptionToken) {
   process.exit(1);
 }
 
-const dbPath = Config.DataFolderPath + "/fluxcord.db";
+const dbPath = Config.DataFolderPath + "/grytcord.db";
 const tmpPath = dbPath + ".tmp";
 const backupPath = dbPath + ".bak";
 
@@ -89,9 +89,7 @@ try {
 
   console.log("Done!");
   console.log(`Backup saved as: ${backupPath}`);
-  console.log(
-    "Once you've confirmed the bot works, you can delete the backup.",
-  );
+  console.log("Once you've confirmed the bot works, you can delete the backup.");
 } catch (err) {
   if (fs.existsSync(tmpPath)) {
     fs.unlinkSync(tmpPath);

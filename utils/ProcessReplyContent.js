@@ -1,26 +1,29 @@
 import truncate from "truncate";
-import {
-  removeLinkEmbeds,
-  sanitizeLinks,
-  traverseMessageLinks,
-} from "./EmojiStickerParser.js";
+import { sanitizeLinks } from "./EmojiStickerParser.js";
 import { sanitizePings } from "./SanitizePings.js";
-import { parseMentions } from "./MessageContentParser.js";
 
 /**
- * @param {import("@fluxerjs/core").Message} message
+ * The one line of context a reply shows above itself.
+ *
+ * @param {{ content?: string, attachments?: any[] } | null} message
  */
 export async function processReplyContent(message) {
-  if (message.content.trim().length === 0)
-    if (message.stickers.length > 0) return "*Sticker*";
-    else if (message.attachments.size > 0) return "*Attachment*";
-    else return "*Empty message*";
-  const firstProcess = (
-    await traverseMessageLinks(await parseMentions(message))
-  ).split("\n")[0];
-  let secondProcess = sanitizeLinks(truncate(sanitizePings(firstProcess), 35));
-  if (!secondProcess.endsWith("…") && message.content.split("\n").length > 1) {
-    secondProcess += "…";
+  if (!message) return "*Original message*";
+
+  const content = (message.content ?? "").trim();
+  if (content.length === 0) {
+    // discord.js hands back a Collection, Gryt an array.
+    const attachmentCount =
+      message.attachments?.size ?? message.attachments?.length ?? 0;
+    if (attachmentCount > 0) return "*Attachment*";
+    if ((message.stickers?.size ?? 0) > 0) return "*Sticker*";
+    return "*Empty message*";
   }
-  return secondProcess;
+
+  const firstLine = content.split("\n")[0] ?? "";
+  let processed = sanitizeLinks(truncate(sanitizePings(firstLine), 35));
+  if (!processed.endsWith("…") && content.split("\n").length > 1) {
+    processed += "…";
+  }
+  return processed;
 }

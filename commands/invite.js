@@ -1,7 +1,6 @@
-import { Message as FluxerMessage } from "@fluxerjs/core";
-import { ChannelMap } from "../db/index.js";
 import { Op } from "sequelize";
-import { getFluxerInviteBaseUrl } from "../utils/GetFluxerUrls.js";
+import { ChannelMap } from "../db/index.js";
+import { isGryt, replyTo } from "../utils/Compat.js";
 
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
@@ -10,85 +9,79 @@ const command = {
   name: "invite",
   description: "Get an invite code from the other side",
   requireElevated: false,
-  async run(params, message, discordClient, fluxerClient) {
+  async run(params, message, discordClient, grytClient) {
     const channelMap = await ChannelMap.findOne({
       where: {
         [Op.or]: {
           discordChannelId: message.channelId,
-          fluxerChannelId: message.channelId,
+          grytChannelId: message.channelId,
           discordGuildId: message.guildId,
-          fluxerGuildId: message.guildId,
+          grytGuildId: message.guildId,
         },
       },
     });
 
     if (!channelMap) {
-      await message.reply("This channel isn't part of a bridge.");
+      await replyTo(message, "This channel isn't part of a bridge.");
       return;
     }
 
-    if (message instanceof FluxerMessage) {
+    const data = channelMap.get();
+
+    if (isGryt(message)) {
       let guild;
       try {
-        guild = await discordClient.guilds.fetch(channelMap.discordGuildId);
+        guild = await discordClient.guilds.fetch(data.discordGuildId);
       } catch {
         guild = null;
       }
-
-      if (guild) {
-        let guildInvite = "https://discord.gg/";
-        if (guild.vanityURLCode) guildInvite += guild.vanityURLCode;
-        else {
-          const invite = await guild.invites.create(
-            channelMap.discordChannelId,
-            {
-              maxAge: 172800,
-            },
-          );
-          guildInvite += invite.code;
-        }
-
-        await message.reply(
-          `Invite code for **${guild.name}**${guild.vanityURLCode ? "" : " (valid for 2 days)"}: ${guildInvite}`,
-        );
-      }
-    } else {
-      let guild;
-      try {
-        guild = await fluxerClient.guilds.fetch(channelMap.fluxerGuildId);
-      } catch {
-        guild = null;
+      if (!guild) {
+        await replyTo(message, "Bridged Discord server not found.");
+        return;
       }
 
-      if (guild) {
-        const inviteBase = await getFluxerInviteBaseUrl();
-        let guildInvite = inviteBase + "/";
-        if (guild.vanityURLCode) guildInvite += guild.vanityURLCode;
-        else {
-          /** @type {import("@fluxerjs/core").GuildChannel} */
-          let channel;
-          try {
-            channel = await fluxerClient.channels.fetch(
-              channelMap.fluxerChannelId,
-            );
-          } catch {
-            channel = null;
-          }
-          if (!channel) {
-            await message.reply("Bridged Fluxer channel not found.");
-            return;
-          }
-          const invite = await channel.createInvite({
-            maxAge: 172800,
-          });
-          guildInvite += invite.code;
-        }
-
-        await message.reply(
-          `Invite code for **${guild.name}**${guild.vanityURLCode ? "" : " (valid for 2 days)"}: ${guildInvite}`,
-        );
+      let link = "https://discord.gg/";
+      if (guild.vanityURLCode) {
+        link += guild.vanityURLCode;
+      } else {
+        const invite = await guild.invites.create(data.discordChannelId, {
+          maxAge: 172800,
+        });
+        link += invite.code;
       }
+
+      await replyTo(
+        message,
+        `Invite for **${guild.name}**${guild.vanityURLCode ? "" : " (valid for 2 days)"}: ${link}`,
+      );
+      return;
     }
+
+    const server = grytClient.serverFor(data);
+    if (!server?.ready) {
+      await replyTo(message, "Not joined to that Gryt server (yet).");
+      return;
+    }
+
+    if (!server.can("create_invite")) {
+      await replyTo(
+        message,
+        "The bot is not allowed to create invites on that Gryt server.",
+      );
+      return;
+    }
+
+    const invite = await server.createInvite({ expiresInHours: 48 });
+    if (!invite?.code) {
+      await replyTo(message, "The Gryt server refused to create an invite.");
+      return;
+    }
+
+    // Gryt is joined by address plus code rather than by following a link.
+    await replyTo(
+      message,
+      `Invite for **${server.name}** (valid for 2 days):\nServer: \`${server.host}\`\nCode: \`${invite.code}\``,
+    );
   },
 };
 

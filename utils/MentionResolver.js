@@ -1,164 +1,96 @@
-import { Guild as FluxerGuild } from "@fluxerjs/core";
+/**
+ * `@Name` on Gryt, turned into a real Discord mention when somebody by that
+ * name is in the bridged guild.
+ *
+ * Nothing links a Gryt account to a Discord one, so this is a name lookup and
+ * it is allowed to come up empty — in which case the text stays as it was and
+ * simply reads as a name.
+ */
 
-const idCache = new Map();
-const usernameCache = new Map();
+/** @type {Map<string, { id: string, at: number }>} */
+const nameCache = new Map();
+const CACHE_TTL = 10 * 60 * 1000;
 
-function platformOf(guild) {
-  return guild instanceof FluxerGuild ? "fluxer" : "discord";
-}
-
-function hiddenDiscriminatorFor(platform) {
-  return platform === "fluxer" ? "0000" : "0";
-}
-
-function tagOf(user, platform) {
-  const hidden = hiddenDiscriminatorFor(platform);
-  const disc = String(user.discriminator ?? hidden);
-  const name = user.username.toLowerCase();
-  return disc === hidden ? name : `${name}#${disc}`;
+function cacheKey(guildId, name) {
+  return `${guildId}:${name.toLowerCase()}`;
 }
 
 function trimCache() {
-  if (idCache.size <= 5000) return;
-  const oldestId = idCache.keys().next().value;
-  const oldest = idCache.get(oldestId);
-  usernameCache.delete(tagOf(oldest, oldest.platform));
-  idCache.delete(oldestId);
+  if (nameCache.size <= 5000) return;
+  const oldest = nameCache.keys().next().value;
+  nameCache.delete(oldest);
 }
 
-export function cacheUser(user, platform = "discord") {
-  if (!user?.id) return;
-  const old = idCache.get(user.id);
-  if (old) usernameCache.delete(tagOf(old, old.platform));
-  idCache.set(user.id, {
-    username: user.username,
-    discriminator: String(user.discriminator ?? hiddenDiscriminatorFor(platform)),
-    platform,
-  });
-  usernameCache.set(tagOf(user, platform), user.id);
-  trimCache();
-}
+/**
+ * @param {import("discord.js").Guild} guild
+ * @param {string} name
+ */
+async function findMember(guild, name) {
+  const key = cacheKey(guild.id, name);
+  const cached = nameCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_TTL) {
+    try {
+      return await guild.members.fetch(cached.id);
+    } catch {
+      nameCache.delete(key);
+    }
+  }
 
-async function fetchMember(guild, userId) {
+  let results;
   try {
-    return await guild.members.fetch(userId);
+    results = await guild.members.search({ query: name, limit: 5 });
   } catch {
     return null;
   }
-}
 
-async function searchMembers(guild, username) {
-  try {
-    return await guild.members.search({ query: username, limit: 5 });
-  } catch {
-    return null;
-  }
-}
-
-function hitToUser(hit) {
-  if (hit?.member?.user) return { user: hit.member.user, member: hit.member };
-  if (hit?.user) return { user: hit.user, member: hit };
-  if (hit?.username) return { user: hit, member: null };
-  return null;
-}
-
-export async function resolveUsername(guild, username, discriminator) {
-  const platform = platformOf(guild);
-  const name = username.toLowerCase();
-  const key = tagOf({ username, discriminator }, platform);
-
-  const cachedId = usernameCache.get(key);
-  if (cachedId) {
-    const member = await fetchMember(guild, cachedId);
-    if (member) return member;
-    usernameCache.delete(key);
-  }
-
-  const raw = await searchMembers(guild, username);
-  if (!raw) return null;
-  const hits = raw.members ?? [...raw.values()];
-  const hidden = hiddenDiscriminatorFor(platform);
-
-  for (const hit of hits) {
-    const parsed = hitToUser(hit);
-    if (!parsed) continue;
-    if (discriminator) {
-      if (tagOf(parsed.user, platform) !== key) continue;
-    } else {
-      if (parsed.user.username.toLowerCase() !== name) continue;
-      if (String(parsed.user.discriminator ?? hidden) !== hidden) continue;
+  const wanted = name.toLowerCase();
+  for (const member of results.values()) {
+    const names = [member.displayName, member.user.globalName, member.user.username]
+      .filter(Boolean)
+      .map((x) => String(x).toLowerCase());
+    if (names.includes(wanted)) {
+      nameCache.set(key, { id: member.id, at: Date.now() });
+      trimCache();
+      return member;
     }
-    if (parsed.member) {
-      cacheUser(parsed.user, platform);
-      return parsed.member;
-    }
-    const full = await fetchMember(
-      guild,
-      parsed.user.userId ?? parsed.user.id,
-    );
-    if (!full) continue;
-    cacheUser(full.user ?? full, platform);
-    return full;
   }
 
   return null;
 }
 
-export async function resolveId(guild, userId) {
-  const member = await fetchMember(guild, userId);
-  if (member) cacheUser(member.user ?? member, platformOf(guild));
-  return member;
-}
-
+/**
+ * @param {import("discord.js").Guild | null} guild
+ * @param {string} content
+ */
 export async function resolveMentions(guild, content) {
-  if (!content) return content;
-  const platform = platformOf(guild);
-  const mentionRegex = /(?<![\w.])@([a-z0-9_.]{2,32})(?:#(\d{4}))?\b/gi;
-  const skipNames = ["everyone", "here"];
+  if (!guild || !content) return content;
+
+  const mentionRegex = /(?<![\w<])@([A-Za-z0-9_.\- ]{2,32})/g;
+  const skip = ["everyone", "here"];
+
+  /** @type {Map<string, string>} */
   const wanted = new Map();
-  for (const [, username, discriminator] of content.matchAll(mentionRegex)) {
-    if (skipNames.includes(username.toLowerCase())) continue;
-    const key = tagOf({ username, discriminator }, platform);
-    if (!wanted.has(key)) wanted.set(key, { username, discriminator });
+  for (const [, name] of content.matchAll(mentionRegex)) {
+    const trimmed = name.trim();
+    if (!trimmed || skip.includes(trimmed.toLowerCase())) continue;
+    if (!wanted.has(trimmed.toLowerCase())) wanted.set(trimmed.toLowerCase(), trimmed);
   }
   if (wanted.size === 0) return content;
 
-  const ids = await Promise.all(
-    [...wanted].map(async ([key, { username, discriminator }]) => {
-      const member = await resolveUsername(guild, username, discriminator);
-      return [key, (member?.user ?? member)?.id];
-    }),
-  );
-  const resolved = new Map(ids.filter(([, id]) => id));
+  /** @type {Map<string, string>} */
+  const resolved = new Map();
+  for (const [key, name] of wanted) {
+    const member = await findMember(guild, name);
+    if (member) resolved.set(key, member.id);
+  }
   if (resolved.size === 0) return content;
 
-  return content.replace(mentionRegex, (full, username, discriminator) => {
-    if (skipNames.includes(username.toLowerCase())) return full;
-    const id = resolved.get(tagOf({ username, discriminator }, platform));
-    return id ? `<@${id}>` : full;
-  });
-}
-
-export async function reverseMentions(guild, content) {
-  if (!content) return content;
-  const platform = platformOf(guild);
-  const snowflakeRegex = /<@!?(\d{17,20})>/g;
-  const ids = [
-    ...new Set([...content.matchAll(snowflakeRegex)].map((m) => m[1])),
-  ];
-  if (ids.length === 0) return content;
-
-  const users = await Promise.all(
-    ids.map(async (id) => {
-      const member = await resolveId(guild, id);
-      return [id, member ? (member.user ?? member) : null];
-    }),
-  );
-  const resolved = new Map(users.filter(([, user]) => user));
-  if (resolved.size === 0) return content;
-
-  return content.replace(snowflakeRegex, (full, id) => {
-    const user = resolved.get(id);
-    return user ? `@${tagOf(user, platform)}` : full;
+  return content.replace(mentionRegex, (full, name) => {
+    const trimmed = String(name).trim();
+    if (skip.includes(trimmed.toLowerCase())) return full;
+    const id = resolved.get(trimmed.toLowerCase());
+    // The trailing whitespace the greedy name match may have eaten is put back.
+    const tail = String(name).slice(trimmed.length);
+    return id ? `<@${id}>${tail}` : full;
   });
 }

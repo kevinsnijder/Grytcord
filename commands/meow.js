@@ -1,3 +1,5 @@
+import { replyTo } from "../utils/Compat.js";
+
 const meow = [
   "mreow",
   "mrrp",
@@ -30,8 +32,8 @@ const command = {
   description: ":3",
   requireElevated: false,
   hideFromHelp: true,
-  async run(params, message, discordClient, fluxerClient) {
-    message.reply(meow[Math.floor(Math.random() * meow.length)]);
+  async run(params, message) {
+    await replyTo(message, meow[Math.floor(Math.random() * meow.length)]);
   },
 };
 

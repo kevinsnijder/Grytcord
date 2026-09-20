@@ -1,21 +1,16 @@
-import Config from "../utils/ConfigHandler.js";
-import { BridgeMap } from "../utils/CommandHandler.js";
-import {
-  Collection,
-  GuildChannel as DiscordGuildChannel,
-  Message,
-} from "discord.js";
-import {
-  Message as FluxerMessage,
-  Channel as FluxerChannel,
-} from "@fluxerjs/core";
-import { ChannelMap, MessageMap } from "../db/index.js";
 import { Op } from "sequelize";
-import { FluxerCreateMessageHandler } from "../utils/FluxerHandler.js";
+import Config from "../utils/ConfigHandler.js";
+import { ChannelMap, MessageMap } from "../db/index.js";
+import { GrytCreateMessageHandler } from "../utils/GrytHandler.js";
 import { DiscordCreateMessageHandler } from "../utils/DiscordHandler.js";
+import { editSent, isGryt, replyTo } from "../utils/Compat.js";
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
- * @type {import('../utils/CommandSchema.js').CommandSchema}
+ * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
  */
 const command = {
   name: "backfill",
@@ -23,98 +18,89 @@ const command = {
   requireElevated: true,
   params: "[numOfMessages=25]",
   additionalInfo: `numOfMessages = message count starting from the last message sent
-  
-Number of messages is limited to 100 due to Discord and Fluxer API limitations`,
-  async run(params, message, discordClient, fluxerClient) {
-    let isFluxer = message instanceof FluxerMessage;
-    let numOfMessages = Number.parseInt(params[0] || "10");
-    const actualNum = numOfMessages;
-    if (numOfMessages < 100) numOfMessages += 2;
+
+Limited to 100 messages: both APIs stop there.`,
+  async run(params, message, discordClient, grytClient) {
+    const fromGryt = isGryt(message);
+    const wanted = Math.min(
+      Math.max(Number.parseInt(params[0] || "25", 10) || 25, 1),
+      100,
+    );
 
     const channelMap = await ChannelMap.findOne({
       where: {
         [Op.or]: {
           discordChannelId: message.channelId,
-          fluxerChannelId: message.channelId,
+          grytChannelId: message.channelId,
         },
       },
     });
 
-    if (!ChannelMap) {
-      await message.reply(
-        "This channel is not bridged. Run `" +
-          Config.BotPrefix +
-          "bridge` to setup bridging, then run backfill again.",
+    if (!channelMap) {
+      await replyTo(
+        message,
+        `This channel is not bridged. Run \`${Config.BotPrefix}setup\` first, then run backfill again.`,
       );
       return;
     }
 
-    /** @type {import("@fluxerjs/collection").Collection<string, import("@fluxerjs/core").Message> | Collection<import("discord.js").Snowflake, Message>} */
-    const msgs = await message.channel.messages.fetch({
-      limit: numOfMessages,
-    });
+    /** @type {any[]} */
+    let messages = [];
+    if (fromGryt) {
+      messages = await message.server.fetchMessages(message.channelId, wanted);
+    } else {
+      const fetched = await message.channel.messages.fetch({ limit: wanted });
+      messages = [...fetched.values()];
+    }
 
-    const ids = Array.from(msgs.values(), (x) => x.id);
-    const alrBridged = await MessageMap.findAll({
+    const ids = messages.map((x) => x.id);
+    const alreadyBridged = await MessageMap.findAll({
       where: {
         [Op.or]: {
-          discordMessageId: {
-            [Op.in]: ids,
-          },
-          fluxerMessageId: {
-            [Op.in]: ids,
-          },
+          discordMessageId: { [Op.in]: ids },
+          grytMessageId: { [Op.in]: ids },
         },
       },
     });
 
-    const matchedIds = new Set(
-      alrBridged.flatMap((row) => [row.discordMessageId, row.fluxerMessageId]),
-    );
-    const unbridgedMsgs = [...msgs.values()].filter(
-      (msg) => !matchedIds.has(msg.id),
+    const seen = new Set(
+      alreadyBridged.flatMap((row) => [
+        row.get("discordMessageId"),
+        row.get("grytMessageId"),
+      ]),
     );
 
-    const statusMsg = await message.reply(
-      `Getting ${actualNum} messages and trying to bridge them...`,
+    const pending = messages.filter((msg) => !seen.has(msg.id)).reverse();
+
+    const status = await replyTo(
+      message,
+      `Getting ${pending.length} messages and trying to bridge them...`,
     );
 
     let success = 0;
-    for (const [i, msg] of unbridgedMsgs.reverse().entries()) {
+    for (const [index, msg] of pending.entries()) {
+      await editSent(status, {
+        content: `Backfilling ${msg.id}... (${index + 1}/${pending.length}, ${success} successful)`,
+      });
+
       try {
-        await statusMsg.edit({
-          content: `Trying to backfill message ID ${msg.id}... (${i + 1}/${actualNum}, ${success} successful)`,
-        });
-      } catch {}
-      try {
-        if (msg instanceof FluxerMessage) {
-          await FluxerCreateMessageHandler(
-            msg,
-            fluxerClient,
-            discordClient,
-            message.guild.id,
-          );
+        if (fromGryt) {
+          await GrytCreateMessageHandler(msg, grytClient, discordClient);
         } else {
-          await DiscordCreateMessageHandler(
-            msg,
-            discordClient,
-            fluxerClient,
-            true,
-          );
+          await DiscordCreateMessageHandler(msg, discordClient, grytClient, true);
         }
         success++;
-      } catch {}
+      } catch {
+        // One message that will not cross should not end the run.
+      }
+
       await sleep(500);
     }
 
-    statusMsg.edit({
-      content: `🎉 Successfully backfilled ${success} messages to ${!isFluxer ? "Fluxer" : "Discord"}!`,
+    await editSent(status, {
+      content: `🎉 Successfully backfilled ${success} message${success === 1 ? "" : "s"} to ${fromGryt ? "Discord" : "Gryt"}!`,
     });
   },
 };
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export default command;

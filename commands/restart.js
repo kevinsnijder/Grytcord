@@ -1,3 +1,5 @@
+import { replyTo } from "../utils/Compat.js";
+
 /**
  * @type {import('../utils/CommandSchema.d.ts').CommandSchema}
  */
@@ -8,8 +10,8 @@ const command = {
   description: "Restart bot",
   requireElevated: false,
   requireOwner: true,
-  async run(params, message, _, _2) {
-    await message.reply("Restarting...");
+  async run(params, message) {
+    await replyTo(message, "Restarting...");
 
     process.exit(67);
   },

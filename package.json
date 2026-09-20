@@ -1,7 +1,7 @@
 {
-  "name": "fluxcord",
-  "version": "1.10a",
-  "repository": "https://git.gay/Fluxcord/core",
+  "name": "grytcord",
+  "version": "1.0a",
+  "repository": "",
   "module": "index.js",
   "type": "module",
   "private": true,
@@ -12,36 +12,28 @@
     "encrypt": "node ./encrypt.js"
   },
   "dependencies": {
-    "@fluxerjs/collection": "^3.0.0",
-    "@fluxerjs/core": "^3.0.0",
+    "@gryt/bot": "^0.1.1",
     "@journeyapps/sqlcipher": "^6.0.0",
-    "@types/dockerode": "^4.0.1",
     "discord.js": "^14.27.0",
-    "dockerode": "^5.0.1",
     "expiry-map": "^2.0.0",
-    "express": "^5.2.1",
-    "fuzzymatchingjs": "^0.5.0",
     "pg": "^8.13.1",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.8",
     "sequelize-typescript": "^2.1.6",
+    "socket.io-client": "^4.8.3",
     "sqlite3": "^6.0.1",
     "truncate": "^3.0.0",
-    "typescript": "^7.0.2",
-    "umzug": "^3.8.3",
-    "ws": "^8.21.3"
+    "typescript": "^5.9.3",
+    "umzug": "^3.8.3"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.1",
     "tsx": "^4.23.13"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
       "@journeyapps/sqlcipher",
-      "sqlite3",
-      "cpu-features",
-      "ssh2"
+      "sqlite3"
     ]
   }
 }

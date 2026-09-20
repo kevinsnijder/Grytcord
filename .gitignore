@@ -1,4 +1,4 @@
-# dependencies (bun install)
+# dependencies
 node_modules
 
 # output
@@ -13,7 +13,6 @@ coverage
 # logs
 logs
 _.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # dotenv environment variable files
 .env
@@ -37,4 +36,5 @@ config.json
 config.ts
 config.js
 
-data/fluxcord*
+data/grytcord*
+data/gryt-bot-identity.json

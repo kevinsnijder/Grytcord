@@ -1,153 +1,189 @@
 import { log } from "./Logger.js";
-import Config from "../utils/ConfigHandler.js";
-import { ChannelMap, MessageMap } from "../db/index.js";
-import { Op } from "sequelize";
 import {
-  getFluxEmojis,
+  getGrytEmojis,
   getDiscordEmojis,
   getBotEmojis,
-  clearFluxEmojiCache,
+  clearGrytEmojiCache,
   clearBotEmojiCache,
 } from "./EmojiCache.js";
-import { getFluxerMediaBaseUrl, getFluxerWebappUrl } from "./GetFluxerUrls.js";
 
 /**
- * @param {string | null} content Message content
- * @param {FluxerClient} fluxerClient Fluxer client instance
- * @param {string | null} targetFluxerGuildId Target fluxer guild (emoji check)
+ * Custom emoji, both ways.
+ *
+ * Discord writes `<:name:id>` and keeps the image on its CDN; Gryt writes
+ * `:name:` and keeps one library per server. So the crossing is by name, and
+ * when the name is not there yet the image is uploaded — into the Gryt server's
+ * library one way, into the bot's application emojis the other.
  */
-export async function parseDiscordEmojiToFluxer(
+
+const DISCORD_EMOJI_PATTERN = /<(a?):([\w-]+):(\d+)>/g;
+const GRYT_EMOJI_PATTERN = /:([A-Za-z0-9_]{2,32}):/g;
+
+/**
+ * @param {string} id
+ * @param {boolean} animated
+ */
+function discordEmojiUrl(id, animated) {
+  return `https://cdn.discordapp.com/emojis/${id}${animated ? ".gif" : ".webp"}`;
+}
+
+/**
+ * Gryt's naming rules: 2–32 characters, letters, digits and underscores only.
+ *
+ * @param {string} name
+ */
+function toGrytEmojiName(name) {
+  const cleaned = String(name).replace(/[^A-Za-z0-9_]/g, "_").slice(0, 32);
+  return cleaned.length >= 2 ? cleaned : `e_${cleaned}`.slice(0, 32);
+}
+
+/**
+ * Discord's custom emoji, rewritten for Gryt.
+ *
+ * @param {string | null} content
+ * @param {import("./GrytClient.js").GrytServerConnection | null} server
+ */
+export async function parseDiscordEmojiToGryt(content, server) {
+  if (!content) return content ?? "";
+  if (!server) return content.replace(DISCORD_EMOJI_PATTERN, ":$2:");
+
+  const matches = [...content.matchAll(DISCORD_EMOJI_PATTERN)];
+  if (matches.length === 0) return content;
+
+  let existing = await getGrytEmojis(server);
+  let result = content;
+
+  for (const [raw, animatedFlag, name, id] of matches) {
+    const wanted = toGrytEmojiName(name);
+    let found = existing.find((x) => x.name.toLowerCase() === wanted.toLowerCase());
+
+    if (!found && server.can("manage_emojis")) {
+      try {
+        const res = await fetch(discordEmojiUrl(id, animatedFlag === "a"));
+        if (res.ok) {
+          const data = Buffer.from(await res.arrayBuffer());
+          await server.createEmoji({
+            data,
+            name: wanted,
+            contentType: animatedFlag === "a" ? "image/gif" : "image/webp",
+          });
+          clearGrytEmojiCache(server.host);
+          existing = await getGrytEmojis(server);
+          found = existing.find(
+            (x) => x.name.toLowerCase() === wanted.toLowerCase(),
+          );
+        }
+      } catch (e) {
+        log("GRYT", `Could not mirror Discord emoji ${name} to ${server.host}`, e);
+      }
+    }
+
+    // Falling back to `:name:` is not nothing: if that name turns up in the
+    // server's library later, old messages start drawing it.
+    result = result.replaceAll(raw, `:${found?.name ?? wanted}:`);
+  }
+
+  return result;
+}
+
+/**
+ * Gryt's custom emoji, rewritten for Discord.
+ *
+ * @param {string | null} content
+ * @param {import("discord.js").Client} discordClient
+ * @param {import("./GrytClient.js").GrytServerConnection | null} server
+ * @param {string | null} targetDiscordGuildId
+ */
+export async function parseGrytEmojiToDiscord(
   content,
-  fluxerClient,
-  targetFluxerGuildId,
-  attempt = 0,
+  discordClient,
+  server,
+  targetDiscordGuildId,
 ) {
-  if (!content) return content;
+  if (!content || !server) return content ?? "";
 
-  const regex = /:(a?\d+):/g;
-  const emojiIdNameMap = new Map();
+  const matches = [...content.matchAll(GRYT_EMOJI_PATTERN)];
+  if (matches.length === 0) return content;
 
-  let result = content.replace(
-    /<(a?):([\w\-\_]+):(\d+)>/g,
-    (_, animated, name, id) => {
-      emojiIdNameMap.set(`${animated}${id}`, name);
-      return `:${animated}${id}:`;
-    },
-  );
+  const library = await getGrytEmojis(server);
+  if (library.length === 0) return content;
 
-  /** @type {Array<{ name: string, id: string }> | null} */
-  let targetGuildEmojis = null;
-  if (targetFluxerGuildId) {
+  /** @type {Array<{ name: string, id: string, animated: boolean }>} */
+  let guildEmojis = [];
+  if (targetDiscordGuildId) {
     try {
-      targetGuildEmojis = await getFluxEmojis(
-        targetFluxerGuildId,
-        fluxerClient,
-      );
+      guildEmojis = await getDiscordEmojis(targetDiscordGuildId, discordClient);
     } catch {
-      targetGuildEmojis = null;
+      guildEmojis = [];
     }
   }
 
-  /** @type {string[]} */
-  const emojis = [];
+  let appEmojis = await getBotEmojis(discordClient);
+  let result = content;
+  const handled = new Set();
 
-  let m;
-  while ((m = regex.exec(result)) !== null) {
-    if (m.index === regex.lastIndex) {
-      regex.lastIndex++;
+  for (const [raw, name] of matches) {
+    if (handled.has(name)) continue;
+    handled.add(name);
+
+    const source = library.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (!source) continue;
+
+    const inGuild = guildEmojis.find(
+      (x) => x.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (inGuild) {
+      result = result.replaceAll(
+        raw,
+        `<${inGuild.animated ? "a" : ""}:${inGuild.name}:${inGuild.id}>`,
+      );
+      continue;
     }
 
-    if (m[1]) {
-      if (!emojis.includes(m[1])) {
-        emojis.push(m[1]);
-        try {
-          const sourceName = emojiIdNameMap.get(m[1]);
-          if (sourceName && targetFluxerGuildId && targetGuildEmojis) {
-            const byName = targetGuildEmojis.find((x) => x.name === sourceName);
-            if (byName) {
-              const mapped = await fluxerClient.resolveEmoji(
-                `:${sourceName}:`,
-                targetFluxerGuildId,
-              );
-              if (mapped) {
-                result = result.replaceAll(`:${m[1]}:`, `<:${mapped}>`);
-                continue;
-              }
-            }
+    let mirrored = [...appEmojis.values()].find(
+      (x) => x.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    if (!mirrored) {
+      try {
+        const res = await fetch(server.emojiUrl(source.name));
+        if (res.ok) {
+          const data = Buffer.from(await res.arrayBuffer());
+          let created;
+          try {
+            created = await discordClient.application?.emojis.create({
+              attachment: data,
+              name: source.name,
+            });
+          } catch (e) {
+            // Almost always the application's emoji slots being full. Make
+            // room by dropping the oldest mirrored ones and try once more.
+            await evictOldestAppEmojis(discordClient);
+            created = await discordClient.application?.emojis.create({
+              attachment: data,
+              name: source.name,
+            });
           }
-
-          const animated = m[1].startsWith("a");
-          const rawId = animated ? m[1].slice(1) : m[1];
-
-          if (!/^\d{17,19}$/.test(rawId)) continue;
-
-          const emojiName = `e${m[1]}`;
-
-          let existingEmojis = await getFluxEmojis(
-            Config.FluxerTempEmojiGuildId,
-            fluxerClient,
-          );
-          let existing = existingEmojis?.find((x) => x.name === emojiName);
-
-          if (!existing) {
-            const res = await fetch(
-              "https://cdn.discordapp.com/emojis/" +
-                rawId +
-                (animated ? ".gif" : ".webp"),
-            );
-            if (!res.ok) continue;
-            const buf = await res.arrayBuffer();
-
-            const fluxerGuild = await fluxerClient.guilds.fetch(
-              Config.FluxerTempEmojiGuildId,
-            );
-            await fluxerGuild?.createEmojisBulk([
-              {
-                image: btoa(
-                  new Uint8Array(buf).reduce(
-                    (data, byte) => data + String.fromCharCode(byte),
-                    "",
-                  ),
-                ),
-                name: emojiName,
-              },
-            ]);
-
-            clearFluxEmojiCache(Config.FluxerTempEmojiGuildId);
-            existingEmojis = await getFluxEmojis(
-              Config.FluxerTempEmojiGuildId,
-              fluxerClient,
-            );
-            existing = existingEmojis?.find((x) => x.name === emojiName);
-          }
-
-          const fluxerEmoji = await fluxerClient.resolveEmoji(
-            `:${emojiName}:`,
-            Config.FluxerTempEmojiGuildId,
-          );
-
-          result = result.replaceAll(
-            `:${m[1]}:`,
-            `<${fluxerEmoji.startsWith("a") ? "" : ":"}${fluxerEmoji}>`,
-          );
-        } catch (e) {
-          if (attempt < 5) {
-            log(
-              "FLUXER",
-              "Cannot convert Discord emoji to Fluxer, deleting 25 oldest emojis and trying again...",
-              e,
-            );
-            const err = await deleteOldestEmojisFluxer(fluxerClient);
-            if (err) attempt = 67;
-            return await parseDiscordEmojiToFluxer(
-              content,
-              fluxerClient,
-              targetFluxerGuildId,
-              attempt + 1,
-            );
+          clearBotEmojiCache();
+          appEmojis = await getBotEmojis(discordClient);
+          if (created) {
+            mirrored = {
+              name: created.name ?? source.name,
+              id: created.id,
+              animated: Boolean(created.animated),
+            };
           }
         }
+      } catch (e) {
+        log("DISCORD", `Could not mirror Gryt emoji ${name} to Discord`, e);
       }
+    }
+
+    if (mirrored) {
+      result = result.replaceAll(
+        raw,
+        `<${mirrored.animated ? "a" : ""}:${mirrored.name}:${mirrored.id}>`,
+      );
     }
   }
 
@@ -155,123 +191,83 @@ export async function parseDiscordEmojiToFluxer(
 }
 
 /**
- * @param {string | null} content
- * @param {DiscordClient} discordClient
- * @param {string | null} targetDiscordGuildId
+ * Drop the 25 oldest mirrored application emojis.
+ *
+ * Grytcord's own furniture (`reply_l`, `reply_r`) is left alone: those are
+ * drawn on every bridged reply and are not worth re-uploading.
+ *
+ * @param {import("discord.js").Client} discordClient
  */
-export async function parseFluxerEmojiToDiscord(
-  content,
+async function evictOldestAppEmojis(discordClient) {
+  try {
+    const emojis = await discordClient.application?.emojis.fetch();
+    if (!emojis) return;
+
+    const evictable = [...emojis.values()].filter(
+      (x) => !String(x.name ?? "").startsWith("reply"),
+    );
+
+    let removed = 0;
+    for (const emoji of evictable) {
+      if (removed >= 25) break;
+      try {
+        await emoji.delete();
+        removed++;
+      } catch {}
+    }
+
+    log("DISCORD", `Made room for new emojis by deleting ${removed} old ones.`);
+    clearBotEmojiCache();
+  } catch (e) {
+    log("DISCORD", "Could not free up application emoji slots", e);
+  }
+}
+
+/**
+ * The reaction form of the same crossing: one emoji, not a message full of them.
+ *
+ * @param {{ id?: string | null, name?: string | null, animated?: boolean }} emoji
+ * @param {import("./GrytClient.js").GrytServerConnection} server
+ * @returns {Promise<string | null>} what to send as Gryt's `reactionSrc`
+ */
+export async function discordReactionToGryt(emoji, server) {
+  if (!emoji) return null;
+  // A unicode emoji crosses unchanged, which is most reactions.
+  if (!emoji.id) return emoji.name ?? null;
+
+  const wanted = toGrytEmojiName(emoji.name ?? "");
+  const library = await getGrytEmojis(server);
+  const found = library.find((x) => x.name.toLowerCase() === wanted.toLowerCase());
+  return found ? `:${found.name}:` : null;
+}
+
+/**
+ * @param {string} reactionSrc
+ * @param {import("discord.js").Client} discordClient
+ * @param {import("./GrytClient.js").GrytServerConnection} server
+ * @param {string | null} targetDiscordGuildId
+ * @returns {Promise<string | null>} what to send as Discord's reaction emoji
+ */
+export async function grytReactionToDiscord(
+  reactionSrc,
   discordClient,
+  server,
   targetDiscordGuildId,
-  attempt = 0,
 ) {
-  if (!content) return content;
-  const regex = /:(a?\d+):/g;
-  const emojiIdNameMap = new Map();
+  if (!reactionSrc) return null;
 
-  let result = content.replace(
-    /<(a?):([\w\-\_]+):(\d+)>/g,
-    (_, animated, name, id) => {
-      emojiIdNameMap.set(`${animated}${id}`, name);
-      return `:${animated}${id}:`;
-    },
+  const custom = /^:([A-Za-z0-9_]{2,32}):$/.exec(reactionSrc);
+  if (!custom) return reactionSrc;
+
+  const rendered = await parseGrytEmojiToDiscord(
+    reactionSrc,
+    discordClient,
+    server,
+    targetDiscordGuildId,
   );
-  result = result.replace(/:e(a?\d+):/g, ":$1:");
-
-  /** @type {string[]} */
-  const emojis = [];
-
-  /** @type {Array<{ name: string, id: string }> | null} */
-  let targetGuildEmojis = null;
-  if (targetDiscordGuildId) {
-    try {
-      targetGuildEmojis = await getDiscordEmojis(
-        targetDiscordGuildId,
-        discordClient,
-      );
-    } catch {
-      targetGuildEmojis = null;
-    }
-  }
-
-  let cachedEmojis = await getBotEmojis(discordClient);
-
-  let m;
-  while ((m = regex.exec(result)) !== null) {
-    if (m.index === regex.lastIndex) {
-      regex.lastIndex++;
-    }
-
-    if (m[1]) {
-      if (!emojis.includes(m[1])) {
-        emojis.push(m[1]);
-        try {
-          const sourceName = emojiIdNameMap.get(m[1]);
-          if (sourceName && targetGuildEmojis) {
-            const byName = targetGuildEmojis.find((x) => x.name === sourceName);
-            if (byName) {
-              result = result.replaceAll(
-                `:${m[1]}:`,
-                `<${m[1].startsWith("a") ? "a" : ""}:${sourceName}:${byName.id}>`,
-              );
-              continue;
-            }
-          }
-
-          const emojiName = `e${m[1]}`;
-
-          let existingEmoji = [...cachedEmojis.values()].find(
-            (x) => x.name === emojiName,
-          );
-
-          const mediaUrl = await getFluxerMediaBaseUrl();
-          if (!existingEmoji) {
-            const res = await fetch(
-              mediaUrl +
-                "/emojis/" +
-                m[1].replace("a", "") +
-                ".webp?animated=" +
-                (m[1].startsWith("a") ? "true" : "false") +
-                "&size=240&quality=lossless",
-            );
-            const arrBuf = await res.arrayBuffer();
-            const buf = Buffer.from(arrBuf);
-
-            const created = await discordClient.application?.emojis.create({
-              attachment: buf,
-              name: emojiName,
-            });
-
-            clearBotEmojiCache();
-            if (created)
-              existingEmoji = { name: created.name ?? "", id: created.id };
-          }
-
-          result = result.replaceAll(
-            `:${m[1]}:`,
-            `<${m[1].startsWith("a") ? "a" : ""}:${emojiName}:${existingEmoji?.id}>`,
-          );
-        } catch (e) {
-          if (attempt < 5) {
-            log(
-              "DISCORD",
-              "Cannot convert Fluxer emoji to Discord, deleting 25 oldest emojis and trying again...",
-              e,
-            );
-            await deleteOldestEmojisDiscord(discordClient);
-            return await parseFluxerEmojiToDiscord(
-              content,
-              discordClient,
-              targetDiscordGuildId,
-              attempt + 1,
-            );
-          }
-        }
-      }
-    }
-  }
-
-  return result;
+  const parsed = /<(a?):([\w-]+):(\d+)>/.exec(rendered);
+  // discord.js wants `name:id` when reacting with a custom emoji.
+  return parsed ? `${parsed[2]}:${parsed[3]}` : null;
 }
 
 /**
@@ -289,133 +285,11 @@ export function removeLinkEmbeds(str) {
  * @returns {string}
  */
 export function sanitizeLinks(str) {
-  return str.replace(
-    /https?:\/\/[^\s]+/g,
-    (url) => `*${new URL(url).hostname}*`,
-  );
-}
-
-/**
- * @param {string} str
- * @returns {Promise<string>}
- */
-export async function traverseMessageLinks(str) {
-  let result = str;
-
-  const webAppUrl = await getFluxerWebappUrl();
-  const webApp = new URL(webAppUrl);
-  const regex = new RegExp(
-    `https://(discord\\.com|(?:web.)?(?:canary.)?fluxer.app|${webApp.hostname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})/channels/(\\d+)/(\\d+)(?:/(\\d+))?`,
-    "g",
-  );
-
-  let m;
-  while ((m = regex.exec(result)) !== null) {
-    if (m.index === regex.lastIndex) {
-      regex.lastIndex++;
-    }
-
+  return str.replace(/https?:\/\/[^\s]+/g, (url) => {
     try {
-      if (m[1] && m[2] && m[3]) {
-        if (m[4]) {
-          const message = await MessageMap.findOne({
-            where: {
-              [Op.or]: {
-                discordMessageId: m[4],
-                fluxerMessageId: m[4],
-              },
-            },
-            include: ["channelMap"],
-          });
-          if (message) {
-            if (!m[1].includes("discord.com")) {
-              result = result.replaceAll(
-                m[0],
-                `https://discord.com/channels/${message.channelMap.discordGuildId}/${message.channelMap.discordChannelId}/${message.discordMessageId}`,
-              );
-            } else {
-              result = result.replaceAll(
-                m[0],
-                `${webAppUrl}/channels/${message.channelMap.fluxerGuildId}/${message.channelMap.fluxerChannelId}/${message.fluxerMessageId}`,
-              );
-            }
-          }
-        } else {
-          const channel = await ChannelMap.findOne({
-            where: {
-              [Op.or]: {
-                discordChannelId: m[3],
-                fluxerChannelId: m[3],
-              },
-            },
-          });
-          if (channel) {
-            if (m[1].startsWith("fluxer")) {
-              result = result.replaceAll(
-                m[0],
-                `https://discord.com/channels/${channel.discordGuildId}/${channel.discordChannelId}`,
-              );
-            } else {
-              result = result.replaceAll(
-                m[0],
-                `${webAppUrl}/channels/${channel.fluxerGuildId}/${channel.fluxerChannelId}`,
-              );
-            }
-          }
-        }
-      }
-    } catch {}
-  }
-
-  return result;
-}
-
-/**
- * @param {FluxerClient} fluxerClient
- */
-async function deleteOldestEmojisFluxer(fluxerClient) {
-  const guild = await fluxerClient.guilds.fetch(Config.FluxerTempEmojiGuildId);
-  if (guild) {
-    try {
-      let emojis = await guild.fetchEmojis();
-      emojis = emojis.filter(
-        (x) => !x.name.startsWith("reply") && x.name !== "loading",
-      );
-      emojis = emojis.slice(-26, -1);
-
-      await Promise.all(
-        emojis.map(async (x) => {
-          log("DEBUG", `Attempting to delete emoji ID ${x.id} (${x.name})...`);
-          await x.delete();
-        }),
-      );
-    } catch (e) {
-      log("FLUXER", "Cannot delete oldest emojis on Fluxer: " + e);
-      return true;
+      return `*${new URL(url).hostname}*`;
+    } catch {
+      return url;
     }
-    clearFluxEmojiCache(Config.FluxerTempEmojiGuildId);
-  }
-}
-
-/**
- * @param {import("discord.js").Client} discordClient
- */
-async function deleteOldestEmojisDiscord(discordClient) {
-  let app = await discordClient.application?.fetch();
-  if (app) {
-    let emojis = (await app.emojis.fetch()).filter(
-      (x) => !x.name.startsWith("reply") && x.name !== "loading",
-    );
-    let i = 0;
-    for (let emoji of emojis.reverse().values()) {
-      if (i > 25) break;
-      log(
-        "DEBUG",
-        `Attempting to delete emoji ID ${emoji.id} (${emoji.name})...`,
-      );
-      await emoji?.delete();
-      i++;
-    }
-    clearBotEmojiCache();
-  }
+  });
 }
