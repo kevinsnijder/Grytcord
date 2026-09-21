@@ -28,6 +28,29 @@ const Config = {
   // The path for the bot's data directory. Probably do not touch if you're using Docker.
   DataFolderPath: "/data",
 
+  // Where DataFolderPath is reachable from the public internet, if anywhere.
+  //
+  // REQUIRED FOR AUTHOR PICTURES. Discord will not read a bridged author's face
+  // off the Gryt server: its image proxy cannot get past the read token in the
+  // file URL, so the message arrives with a blank face and nothing reports it.
+  // Grytcord writes a flattened copy to DataFolderPath/avatars instead and puts
+  // this URL in front of it. Without it, messages still bridge — they just have
+  // no picture on them.
+  //
+  // Two ways to publish it, either is fine:
+  //
+  //  1. Serve the folder from a web server you already run (no port to expose):
+  //       location /grytcord/avatars/ {
+  //         alias /path/to/your/grytcord/data/avatars/;
+  //       }
+  //     then PublicBaseUrl: "https://chat.example.com/grytcord"
+  //
+  //  2. Publish Grytcord's own port (-p 8080:8080) and put a name in front of
+  //     it, then PublicBaseUrl: "https://grytcord.example.com"
+  //
+  // The path "/avatars/<name>.png" is appended to whatever is set here.
+  PublicBaseUrl: "",
+
   // The database encryption token. If you're just running a instance for yourself
   // you don't really need to set this.
   // NOTE: Only applies to SQLite. Ignored when PostgresConnectionString is set.
@@ -63,8 +86,20 @@ const Config = {
   EmbedFooterContent: "",
 
   // The categories that the bot will log, remove any that you don't need.
-  // Categories: GRYT, DISCORD, DB, META, DEBUG
-  LoggingCategories: ["GRYT", "DISCORD", /*'DB',*/ "META"],
+  // Categories: GRYT, DISCORD, DB, META, DEBUG, AVATAR
+  //  - DEBUG is the per-message bridge trace: why a message was skipped, what
+  //    id it got on the other side. Off here, so turn it on when something is
+  //    not crossing and you want to know where it stopped.
+  //  - AVATAR is the author-picture trail, Gryt file through to whether Discord
+  //    accepted it.
+  //  - "ALL" turns everything on.
+  // ERROR is not in this list because it is never filtered.
+  //
+  // The GRYTCORD_LOG environment variable overrides this, which is the way in
+  // when config.js is mounted read-only:
+  //   docker run -e GRYTCORD_LOG=ALL ...
+  //   docker run -e GRYTCORD_LOG=GRYT,DISCORD,AVATAR ...
+  LoggingCategories: ["GRYT", "DISCORD", /*'DB',*/ "META", "AVATAR"],
 
   // The list of MOTDs for the bot. If not specified or it is empty, it'll be disabled.
   // Examples:

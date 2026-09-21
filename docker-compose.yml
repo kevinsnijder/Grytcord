@@ -11,9 +11,15 @@ services:
       # permissions, name or history.
       - "./data:/data"
       - "./config.js:/app/config.js"
+      # Author pictures are written to /data/avatars and have to be reachable
+      # from the internet, or bridged messages show a blank face — Discord will
+      # not fetch one from the Gryt server. Mount a folder your web server
+      # already publishes over it, and set PublicBaseUrl to match. See the
+      # README, "Author pictures".
+      # - "/var/www/example.com/files/gryt/avatars:/data/avatars"
     restart: on-failure
     # ports:
-    #   - "8080:8080" # healthcheck endpoint (/health), uncomment to scrape from host
+    #   - "8080:8080" # /health, and /avatars if you serve pictures from here
     expose:
       - "8080"
     healthcheck:

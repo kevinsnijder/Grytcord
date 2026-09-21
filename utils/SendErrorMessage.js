@@ -1,5 +1,5 @@
 import { GuildMap } from "../db/index.js";
-import { log } from "./Logger.js";
+import { log, logError } from "./Logger.js";
 import { genMsgLink } from "./GenMsgLink.js";
 import { isGryt, sendTo } from "./Compat.js";
 import { isBridgeHealthDegraded, recordBridgeFailure } from "./BridgeHealth.js";
@@ -70,13 +70,15 @@ export async function sendErrorMessage(
       const reaction = guildMap?.get("errorReaction") ?? "⛓️‍💥";
       if (reaction) await message.react(reaction);
     }
-  } catch {
-    // Reporting the failure must never become a second failure.
+  } catch (e) {
+    // Reporting the failure must never become a second failure — but it should
+    // not be invisible either.
+    log("DEBUG", "Could not report a bridge failure to its error channel:", e);
   }
 
-  log(
+  logError(
     isGryt(message) ? "GRYT" : "DISCORD",
-    `An error occurred on ${await genMsgLink(message).catch(() => "?")}`,
+    `Bridging failed on ${await genMsgLink(message).catch(() => "?")}`,
     error,
   );
 }

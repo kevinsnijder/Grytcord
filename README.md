@@ -53,6 +53,12 @@ These are Gryt's, not the bridge's:
 - **Reactions collapse.** Both sides react as the bot, so five people reacting
   with 🎉 arrive as one 🎉.
 
+One of the bridge's own, worth knowing before you wonder about it:
+
+- **Author pictures need somewhere public to live.** Discord will not fetch one
+  from the Gryt server, so Grytcord republishes it. Without `PublicBaseUrl`,
+  bridged messages have blank faces. See [Author pictures](#3b-author-pictures).
+
 ## Setting up
 
 ### 1. Discord
@@ -79,6 +85,89 @@ cp config.example.js config.js
 
 Fill in `DiscordBotToken`, `DiscordClientId`, `GrytServers` and
 `AdminAccountIds`.
+
+### 3b. Author pictures
+
+Messages bridge fine without this — they just arrive with a blank face where
+the author's picture should be. If you want the pictures, read on.
+
+**Discord will not fetch an avatar from the Gryt server.** A webhook's
+`avatar_url` is loaded by the Discord client, and anything that is not a
+`cdn.discordapp.com` URL goes through Discord's image proxy, which cannot get
+past the read token in a Gryt file URL. It gets a 401 and shows nothing. No
+error appears anywhere — not in Grytcord's log, not in Discord's API response.
+
+So Grytcord flattens each face to a small PNG and writes it to **`/data/avatars`
+inside the container**. Your job is to give that folder a public URL and put it
+in `PublicBaseUrl`. Two ways:
+
+#### Option A: a web server you already run (no port to open)
+
+Mount the folder your site already serves onto `/data/avatars`, so Grytcord
+writes straight into it:
+
+```
+--volume /var/www/example.com/files/gryt/avatars:/data/avatars
+```
+
+in compose:
+
+```yaml
+volumes:
+  - "./data:/data"
+  - "/var/www/example.com/files/gryt/avatars:/data/avatars"
+```
+
+Keep your existing `/data` mount as well — this one nests inside it, and the
+bot's identity and database stay where they are.
+
+If the folder is not already under a served path, point the web server at it:
+
+```nginx
+location /gryt/avatars/ {
+  alias /var/www/example.com/files/gryt/avatars/;
+}
+```
+
+#### Option B: let Grytcord serve them
+
+Publish its port (`-p 8080:8080`, or uncomment `ports` in the compose file) and
+put a hostname in front of it. It serves `/avatars/<name>.png` alongside
+`/health`.
+
+#### Setting PublicBaseUrl
+
+**Grytcord appends `/avatars/<name>.png` to it**, so set it to the URL of the
+folder's *parent*:
+
+| Pictures are served at | PublicBaseUrl |
+|---|---|
+| `https://example.com/files/gryt/avatars/x.png` | `https://example.com/files/gryt` |
+| `https://grytcord.example.com/avatars/x.png` | `https://grytcord.example.com` |
+
+It must be the hostname that actually serves the files. A host that redirects
+somewhere else will not work: Discord follows the redirect and gets whatever is
+at the other end, which is not your PNG. Check before you trust it:
+
+```bash
+curl -sI https://example.com/files/gryt/avatars/ | head -1
+```
+
+A `403` (directory listing off) or `404` is fine — both mean you reached the
+right server. A `301`/`302` means you have the wrong name.
+
+#### Checking it works
+
+Post a message from Gryt, then look in the log:
+
+```
+[AVATAR] <file id>: 2290 bytes of avif -> 37812-byte png published at https://example.com/files/gryt/avatars/<name>.png
+```
+
+Open that URL. If it gives you a PNG, Discord will get the same thing. If the
+log says `PublicBaseUrl is not set` or the file is missing from the folder, the
+mount is wrong — `docker exec grytcord ls /data/avatars` should show the same
+files as the host folder.
 
 ### 4. Run
 

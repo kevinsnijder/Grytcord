@@ -1,8 +1,10 @@
 allowBuilds:
   "@journeyapps/sqlcipher": true
+  sharp: true
   esbuild: true
   sqlite3: true
 onlyBuiltDependencies:
   - esbuild
+  - sharp
   - sqlite3
   - "@journeyapps/sqlcipher"

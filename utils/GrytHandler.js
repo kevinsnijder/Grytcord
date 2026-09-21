@@ -14,6 +14,7 @@ import { processReplyContent } from "./ProcessReplyContent.js";
 import { resetBridgeHealth } from "./BridgeHealth.js";
 import { replyMarker } from "./BotEmojiSetup.js";
 import { resolveDiscordThreadId } from "./DiscordThreadResolver.js";
+import { bridgeAvatarURL, redactFileUrl } from "./AvatarUrl.js";
 
 /**
  * Discord's own limit for a plain upload on an unboosted guild. Anything larger
@@ -154,6 +155,15 @@ export async function GrytCreateMessageHandler(
     discordGuild = null;
   }
 
+  // Settled once, because a placeholder and the message that replaces it have
+  // to wear the same face: an edit cannot change it afterwards.
+  const avatarURL = await bridgeAvatarURL(message);
+  log(
+    "AVATAR",
+    `gryt->discord ${message.id} as "${message.author.displayName}" ` +
+      `avatar=${avatarURL ? redactFileUrl(avatarURL) : "(none — Discord will use the webhook's own face)"}`,
+  );
+
   // Mirroring custom emoji means downloading each one and uploading it to
   // Discord, which is slow enough to be noticed. Past a handful, post something
   // straight away and fill it in when the real thing is ready.
@@ -167,7 +177,7 @@ export async function GrytCreateMessageHandler(
       const early = await webhook.send({
         content: placeholder,
         username: message.author.displayName || "Gryt",
-        ...(message.avatarURL ? { avatarURL: message.avatarURL } : {}),
+        ...(avatarURL ? { avatarURL } : {}),
         allowedMentions: { parse: [] },
         ...(threadId ? { threadId } : {}),
       });
@@ -267,7 +277,7 @@ export async function GrytCreateMessageHandler(
   const payload = {
     content: body || undefined,
     username: message.author.displayName || "Gryt",
-    ...(message.avatarURL ? { avatarURL: message.avatarURL } : {}),
+    ...(avatarURL ? { avatarURL } : {}),
     ...(embeds.length > 0 ? { embeds } : {}),
     ...(attachments ? { attachments } : {}),
     allowedMentions: {
@@ -280,7 +290,7 @@ export async function GrytCreateMessageHandler(
   if (earlyMessageId) {
     // An edit takes the message's contents, not who appears to have sent it:
     // the name and picture were fixed when the placeholder went out.
-    const { username, avatarURL, ...editable } = payload;
+    const { username: _username, avatarURL: _avatarURL, ...editable } = payload;
     try {
       sent = await webhook.editMessage(earlyMessageId, editable);
     } catch (e) {
@@ -304,6 +314,13 @@ export async function GrytCreateMessageHandler(
     "DEBUG",
     `GrytCreate bridged grytId=${message.id} discordId=${sent.id} files=${files.length}`,
   );
+
+  // What went out, and nothing about how it landed: Discord does not re-host an
+  // `avatar_url`, and `author.avatar` on the message it hands back is null
+  // whether the picture draws or not. Only looking at Discord answers that.
+  if (avatarURL) {
+    log("AVATAR", `sent ${sent.id} with avatar_url=${redactFileUrl(avatarURL)}`);
+  }
 
   try {
     await MessageMap.create({

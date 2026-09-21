@@ -219,6 +219,14 @@ export class GrytServerConnection {
       this.fileToken = payload?.fileToken ?? null;
       this.serverUserId = readSelfId(payload?.accessToken) ?? this.serverUserId;
 
+      // Without a file token every upload read comes back 401, which surfaces
+      // as missing avatars and missing attachments rather than as an error.
+      log(
+        "AVATAR",
+        `${this.host} joined: file token ${this.fileToken ? "received" : "MISSING — avatars and attachments will 401"}, ` +
+          `uploads read from ${this.restBase}/api/uploads/files/...`,
+      );
+
       // Being joined is what `ready` means here. The SDK's own `ready` fires
       // once and never again, so a reconnect would otherwise leave the bridge
       // switched off for the rest of the run.

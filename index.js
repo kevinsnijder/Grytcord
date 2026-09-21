@@ -22,7 +22,7 @@ import {
   GrytPurgeUserHandler,
   GrytUpdateMessageHandler,
 } from "./utils/GrytHandler.js";
-import { log } from "./utils/Logger.js";
+import { announceLogging, log, logError } from "./utils/Logger.js";
 import { sendErrorMessage } from "./utils/SendErrorMessage.js";
 import { discordAuthLink, grytJoinHint, renderBox } from "./utils/GenAuthLink.js";
 import { setupReactionHandling } from "./utils/ReactionHandler.js";
@@ -142,7 +142,7 @@ discordClient.on(DiscordEvents.MessageDelete, async (msg) => {
   try {
     await DiscordDeleteMessageHandler(msg, grytClient);
   } catch (e) {
-    log("GRYT", e);
+    logError("GRYT", `Relaying the delete of Discord message ${msg.id} failed.`, e);
   }
 });
 
@@ -150,7 +150,7 @@ discordClient.on(DiscordEvents.MessageBulkDelete, async (msgs) => {
   try {
     await DiscordBulkDeleteMessageHandler(msgs, grytClient);
   } catch (e) {
-    log("GRYT", e);
+    logError("GRYT", `Relaying a Discord bulk delete of ${msgs.size} messages failed.`, e);
   }
 });
 
@@ -158,7 +158,7 @@ discordClient.on(DiscordEvents.ChannelPinsUpdate, async (channel) => {
   try {
     await DiscordPinsUpdateHandler(channel);
   } catch (e) {
-    log("GRYT", e);
+    logError("GRYT", `Handling a pin change in Discord channel ${channel.id} failed.`, e);
   }
 });
 
@@ -176,7 +176,7 @@ grytClient.on("messageUpdate", async (message) => {
   try {
     await GrytUpdateMessageHandler(message, discordClient);
   } catch (e) {
-    log("DISCORD", e);
+    logError("DISCORD", `Relaying the edit of Gryt message ${message.id} failed.`, e);
   }
 });
 
@@ -184,7 +184,7 @@ grytClient.on("messageDelete", async (event) => {
   try {
     await GrytDeleteMessageHandler(event, discordClient);
   } catch (e) {
-    log("DISCORD", e);
+    logError("DISCORD", `Relaying the delete of Gryt message ${event.messageId} failed.`, e);
   }
 });
 
@@ -192,7 +192,7 @@ grytClient.on("purgeUser", async (event) => {
   try {
     await GrytPurgeUserHandler(event, discordClient);
   } catch (e) {
-    log("DISCORD", e);
+    logError("DISCORD", "Relaying a Gryt user purge failed.", e);
   }
 });
 
@@ -242,7 +242,11 @@ async function updatePresence() {
     const text = `${Config.BotPrefix}help | bridging ${count} channel${count === 1 ? "" : "s"}`;
     discordClient.user?.setActivity(text);
     for (const server of grytClient.servers.values()) server.setActivity(text);
-  } catch {}
+  } catch (e) {
+    // Not worth stopping for — but a presence line stuck at zero is a symptom
+    // of something else, and silence is how it stayed a mystery last time.
+    logError("META", "Could not update the presence line.", e);
+  }
 }
 
 /**
@@ -367,6 +371,8 @@ function motdLoop() {
   discordClient.user?.setActivity(text);
   for (const server of grytClient.servers.values()) server.setActivity(text);
 }
+
+announceLogging();
 
 setPresenceUpdater(updatePresence);
 setupReactionHandling(discordClient, grytClient);
