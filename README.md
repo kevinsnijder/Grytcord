@@ -169,13 +169,86 @@ log says `PublicBaseUrl is not set` or the file is missing from the folder, the
 mount is wrong — `docker exec grytcord ls /data/avatars` should show the same
 files as the host folder.
 
-### 4. Run
+### 4. Deploy
+
+A prebuilt image is on Docker Hub as
+[`kevinsnijder/grytcord:latest`](https://hub.docker.com/r/kevinsnijder/grytcord).
+It needs two things from the host: your `config.js`, mounted at
+`/app/config.js`, and a folder mounted at `/data` for the bot's identity and
+database.
+
+**Create `config.js` before starting the container.** If the file does not
+exist, Docker mounts an empty directory in its place and the bot will not
+start. The example config ships inside the image, so you can take it from
+there:
+
+```bash
+mkdir -p grytcord/data && cd grytcord
+docker run --rm kevinsnijder/grytcord:latest cat config.example.js > config.js
+# now fill it in, as in step 3
+```
+
+#### With Docker Compose
+
+Save this as `docker-compose.yml` next to `config.js`:
+
+```yaml
+services:
+  grytcord:
+    image: kevinsnijder/grytcord:latest
+    container_name: grytcord
+    restart: unless-stopped
+    volumes:
+      # THE FILE IS THE BOT: data/gryt-bot-identity.json lives here.
+      - "./data:/data"
+      - "./config.js:/app/config.js:ro"
+      # Author pictures, if a web server of yours publishes them (Option A above):
+      # - "/var/www/example.com/files/gryt/avatars:/data/avatars"
+    # ports:
+    #   - "8080:8080" # /health, and /avatars if Grytcord serves them (Option B)
+    # environment:
+    #   GRYTCORD_LOG: "ALL" # overrides LoggingCategories in config.js
+```
 
 ```bash
 docker compose up -d
+docker compose logs -f grytcord
 ```
 
-or, without Docker:
+#### With plain Docker
+
+```bash
+docker run -d --name grytcord --restart unless-stopped \
+  -v "$PWD/data:/data" \
+  -v "$PWD/config.js:/app/config.js:ro" \
+  kevinsnijder/grytcord:latest
+```
+
+Database migrations run on every start, so there is no separate step. The image
+has a healthcheck on `/health`: the container reports healthy once Discord and
+at least one Gryt server are connected. On first launch it stays unhealthy until
+a Gryt admin approves the bot (step 2).
+
+#### Updating
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+or, with plain Docker, `docker pull kevinsnijder/grytcord:latest`, then remove
+and re-run the container with the same command. Everything that matters is in
+`./data` and `config.js`, so replacing the container loses nothing.
+
+#### Building it yourself
+
+The `docker-compose.yml` in this repository builds the image from source
+instead:
+
+```bash
+docker compose up -d --build
+```
+
+#### Without Docker
 
 ```bash
 pnpm install
