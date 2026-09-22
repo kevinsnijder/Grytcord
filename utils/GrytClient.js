@@ -21,6 +21,8 @@ import RandomString from "./RandomString.js";
  * - manage_webhooks: `setup` creates the per-channel webhook that carries the
  *   Discord author's name and picture
  * - create_invite: the `invite` command
+ * - manage_emojis: Discord emojis are copied into the Gryt library, as they
+ *   come up in messages and all at once by `migrateemojis`
  */
 export const WANTED_PERMISSIONS = [
   "read_messages",
@@ -33,6 +35,7 @@ export const WANTED_PERMISSIONS = [
   "manage_webhooks",
   "create_invite",
   "view_members",
+  "manage_emojis",
   // The "gc!help | bridging N channels" line beside the bot's name.
   "set_activity",
 ];
@@ -128,6 +131,9 @@ export class GrytServerConnection {
    * @param {import("@gryt/bot").BotIdentity} identity
    */
   async start(identity) {
+    // The server honours only the first approval's list, so when a permission
+    // is missing the question is always which list this build is sending.
+    log("GRYT", `${this.host}: asking for ${WANTED_PERMISSIONS.join(", ")}`);
     const bot = new GrytBot({
       host: this.host,
       identity,
@@ -181,6 +187,13 @@ export class GrytServerConnection {
         "GRYT",
         `${this.host}: joined ${info.name} as ${Config.GrytNickname} (role ${info.role || "member"})`,
       );
+      const missing = WANTED_PERMISSIONS.filter((p) => !bot.can(p));
+      if (missing.length > 0) {
+        log(
+          "GRYT",
+          `${this.host}: not granted ${missing.join(", ")}. A permission added after the bot was first approved needs it removed and approved again in Server settings > Bots.`,
+        );
+      }
       this.requestMembers();
       this.client.emit("ready", this, info);
     });
@@ -739,11 +752,12 @@ export class GrytServerConnection {
    * @param {{ data: Buffer, name: string, contentType?: string }} emoji
    */
   async createEmoji(emoji) {
+    const type = emoji.contentType || "image/png";
     const form = new FormData();
     form.append(
       "file",
-      new Blob([emoji.data], { type: emoji.contentType || "image/png" }),
-      `${emoji.name}.png`,
+      new Blob([emoji.data], { type }),
+      `${emoji.name}.${type.split("/")[1] ?? "png"}`,
     );
     form.append("name", emoji.name);
     return this.rest("/api/emojis", { method: "POST", form });

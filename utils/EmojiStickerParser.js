@@ -23,7 +23,7 @@ const GRYT_EMOJI_PATTERN = /:([A-Za-z0-9_]{2,32}):/g;
  * @param {string} id
  * @param {boolean} animated
  */
-function discordEmojiUrl(id, animated) {
+export function discordEmojiUrl(id, animated) {
   return `https://cdn.discordapp.com/emojis/${id}${animated ? ".gif" : ".webp"}`;
 }
 
@@ -32,7 +32,7 @@ function discordEmojiUrl(id, animated) {
  *
  * @param {string} name
  */
-function toGrytEmojiName(name) {
+export function toGrytEmojiName(name) {
   const cleaned = String(name).replace(/[^A-Za-z0-9_]/g, "_").slice(0, 32);
   return cleaned.length >= 2 ? cleaned : `e_${cleaned}`.slice(0, 32);
 }

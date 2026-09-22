@@ -104,6 +104,16 @@ A diagnostic line must never be the thing that throws. Anything that reaches
 into a shape the server owns (`Object.keys(member)`, a member list that may not
 have arrived) goes inside a `try`.
 
+## A bot's permissions are fixed when it is first approved
+
+`WANTED_PERMISSIONS` (`utils/GrytClient.js`) is sent on join, and the server
+only ever honours the list from the first approval: the bot holds the overlap
+of that list and its role, however much the role grants. Adding a permission
+to the list does nothing for an existing install until an admin removes the
+bot in Server settings > Bots and approves it again. Any command that needs a
+new permission should say so when `can()` is false, rather than blaming the
+role.
+
 ## Things Gryt does not have
 
 Pins. Message URLs. Bulk delete (deleting several is several deletes). Per-member
